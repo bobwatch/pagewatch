@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "pagewatch"
+version = "0.1.0"
+description = "Free & Open Source Website Change Monitoring CLI — visual diff, alerts, change detection"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "PageWatch Team", email = "hello@pagewatch.tech"}]
+keywords = [
+  "website-monitoring",
+  "change-detection",
+  "visual-diff",
+  "website-change-detector",
+  "web-scraping",
+  "cli",
+  "visualping-alternative",
+  "page-monitor",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Internet :: WWW/HTTP",
+  "Topic :: Utilities",
+]
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31",
+  "beautifulsoup4>=4.12",
+  "click>=8.1",
+  "rich>=13.7",
+  "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://pagewatch.tech"
+Repository = "https://github.com/bobwatch/pagewatch"
+Issues = "https://github.com/bobwatch/pagewatch/issues"
+
+[project.optional-dependencies]
+selenium = ["selenium>=4.15"]
+dev = ["pytest>=8", "pytest-cov", "ruff"]
+
+[project.scripts]
+pagewatch = "pagewatch.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

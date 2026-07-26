@@ -1,0 +1,39 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PageWatch data
+.pagewatch/
+
+# Hermes
+.hermes/
+
+# Temp
+.temp/
+*.log
+*.err
+
+# Secrets
+.env
+.env.*
+!.env.example
