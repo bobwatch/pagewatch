@@ -36,6 +36,12 @@ class Storage:
             json.dumps(watches, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
+    def get_watch(self, name: str) -> dict[str, Any] | None:
+        for w in self.load_watches():
+            if w["name"] == name:
+                return w
+        return None
+
     def add_watch(self, name: str, url: str, selector: str | None = None, interval: int = 3600) -> dict[str, Any]:
         watches = self.load_watches()
         watch = {
@@ -86,6 +92,17 @@ class Storage:
             "text_length": len(full_text),
         }
         existing.setdefault("history", []).append(entry)
+
+        # Preserve the outgoing snapshot so diffs can always compare the two
+        # most recent distinct versions of the page.
+        prev_latest = existing.get("latest")
+        if prev_latest and prev_latest.get("content_hash") != content_hash:
+            existing["previous"] = {
+                "content_hash": prev_latest.get("content_hash"),
+                "full_text": prev_latest.get("full_text", ""),
+                "updated_at": prev_latest.get("updated_at"),
+            }
+
         existing["latest"] = {
             "content_hash": content_hash,
             "full_text": full_text,

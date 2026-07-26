@@ -34,6 +34,9 @@
 - **CSS Selector Support** — Monitor specific elements, ignore nav bars and footers
 - **Content Hashing** — SHA256-based change detection, fast and reliable
 - **Unified Diffs** — Color-coded text diffs show exactly what changed
+- **Webhook Alerts** — Push change/error notifications to Slack, Discord, Feishu, DingTalk, or any JSON endpoint
+- **Daemon Mode** — `pagewatch watch` keeps checking continuously, honoring each page's interval
+- **Export** — One command to dump watches and change history as JSON or CSV
 - **JSON Storage** — All data stored locally, easy to inspect and export
 - **Change History** — Every check is saved, replay diffs and compare snapshots
 - **Simple & Lightweight** — Zero database required, just JSON files on disk
@@ -87,6 +90,47 @@ pagewatch check
 pagewatch check --name api-docs
 ```
 
+### Watch continuously (daemon mode)
+
+```bash
+# Keeps running, checks each page on its own interval, alerts on changes
+pagewatch watch
+
+# One scheduling pass (useful in scripts/cron), no webhook dispatch
+pagewatch watch --once --no-alerts
+```
+
+### Get alerted via webhooks
+
+```bash
+# Slack incoming webhook
+pagewatch alert add https://hooks.slack.com/services/T000/B000/XXXX --name slack-ops --format slack
+
+# Discord, Feishu (Lark), DingTalk, or any JSON endpoint
+pagewatch alert add https://discord.com/api/webhooks/... --format discord
+pagewatch alert add https://open.feishu.cn/open-apis/bot/v2/hook/... --format feishu
+pagewatch alert add https://oapi.dingtalk.com/robot/send?access_token=... --format dingtalk
+pagewatch alert add https://example.com/my-endpoint --format generic --events all
+
+# Verify, inspect, remove
+pagewatch alert test
+pagewatch alert list
+pagewatch alert remove slack-ops
+```
+
+Channels subscribe to `change` events (default), `error` events, or `all`.
+Every `pagewatch check` and `pagewatch watch` run dispatches alerts automatically (skip with `--no-alerts`).
+
+### Export data
+
+```bash
+# Full JSON backup of watches + change history (add --include-html for raw snapshots)
+pagewatch export > backup.json
+
+# Change history as CSV, straight into your spreadsheet or BI tool
+pagewatch export --format csv -o history.csv
+```
+
 ### View diff between snapshots
 
 ```bash
@@ -113,13 +157,27 @@ pagewatch remove api-docs
 
 ## Configuration
 
-All configuration is stored in `~/.pagewatch/`:
+All configuration is stored in `~/.pagewatch/` (override the location with the `PAGEWATCH_HOME` environment variable):
 
 ```
 ~/.pagewatch/
-  config.json     — global settings (intervals, alerts, proxy)
+  config.json     — global settings (intervals, alert webhooks, proxy)
   watches.json    — list of monitored pages
   snapshots/      — per-page snapshot history (JSON)
+```
+
+Alert channels live in `config.json` under `alerts.webhooks`, e.g.:
+
+```json
+{
+  "interval": 3600,
+  "alerts": {
+    "webhooks": [
+      {"name": "slack-ops", "url": "https://hooks.slack.com/services/...", "format": "slack", "events": "change"}
+    ]
+  },
+  "proxy": null
+}
 ```
 
 ## Comparison
@@ -131,6 +189,7 @@ All configuration is stored in `~/.pagewatch/`:
 | **CSS Selectors** | ✅ | ✅ | ❌ | ✅ |
 | **Visual Diff** | via [pagewatch.tech](https://pagewatch.tech/?ref=github-compare) | ✅ | ❌ | ✅ |
 | **CLI** | ✅ | ❌ | ❌ | ❌ |
+| **Webhook Alerts** | ✅ Slack/Discord/Feishu/DingTalk | ✅ | ✅ | ✅ |
 | **Change History** | ✅ | ✅ | ✅ | ✅ |
 | **Open Source** | ✅ | ❌ | ❌ | ❌ |
 | **Unlimited URLs** | ✅ | ❌ | ❌ | ❌ |

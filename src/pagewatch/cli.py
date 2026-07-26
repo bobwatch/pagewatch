@@ -1,5 +1,11 @@
 #!/usr/bin/env python
+import csv
+import io
+import json
 import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -7,13 +13,24 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
+from .alerts import SUPPORTED_EVENTS, SUPPORTED_FORMATS, AlertManager
 from .monitor import Monitor
 from .storage import Storage
-from .utils import content_hash, extract_text, fetch_page, is_valid_url, normalize_url
+from .utils import is_valid_url, normalize_url
 
 console = Console()
-monitor = Monitor()
-storage = Storage()
+
+
+def get_storage() -> Storage:
+    return Storage()
+
+
+def get_monitor() -> Monitor:
+    return Monitor()
+
+
+def get_alert_manager() -> AlertManager:
+    return AlertManager()
 
 
 def print_banner():
@@ -28,6 +45,14 @@ def print_banner():
     console.print("[dim]visit [link=https://pagewatch.tech]https://pagewatch.tech[/link][/]\n")
 
 
+def _print_deliveries(deliveries):
+    for d in deliveries:
+        if d["ok"]:
+            console.print(f"[green]Alert sent[/] via '{d['channel']}' ({d['event']})")
+        else:
+            console.print(f"[red]Alert failed[/] via '{d['channel']}' ({d['event']}): {d['error']}")
+
+
 @click.group()
 @click.version_option(version=__version__, prog_name="pagewatch")
 @click.pass_context
@@ -37,6 +62,7 @@ def cli(ctx):
 
 @cli.command()
 def init():
+    storage = get_storage()
     config = storage.load_config()
     if not config or config == {"interval": 3600, "alerts": {}, "proxy": None}:
         config = {
@@ -75,7 +101,12 @@ def add(url, name, selector, interval):
         parsed = urlparse(url)
         name = parsed.netloc.replace(".", "-")
 
-    watch = storage.add_watch(name=name, url=url, selector=selector, interval=interval)
+    storage = get_storage()
+    if storage.get_watch(name):
+        console.print(f"[red]Error: A watch named '{name}' already exists.[/]")
+        sys.exit(1)
+
+    storage.add_watch(name=name, url=url, selector=selector, interval=interval)
     console.print(f"[green]Added watch:[/] {name}")
     console.print(f"  URL:      {url}")
     if selector:
@@ -83,9 +114,9 @@ def add(url, name, selector, interval):
     console.print(f"  Interval: {interval}s")
 
 
-@cli.command()
-def list():
-    watches = storage.load_watches()
+@cli.command("list")
+def list_watches():
+    watches = get_storage().load_watches()
     if not watches:
         console.print("[yellow]No watches configured. Use 'pagewatch add <url>' to add one.[/]")
         return
@@ -99,7 +130,7 @@ def list():
     table.add_column("Status")
 
     for w in watches:
-        last = w.get("last_checked", "Never")
+        last = w.get("last_checked") or "Never"
         status = "[green]active[/]" if w.get("last_hash") else "[yellow]pending[/]"
         table.add_row(
             w["name"],
@@ -115,10 +146,13 @@ def list():
 
 @cli.command()
 @click.option("--name", "-n", help="Check a specific watch by name")
-def check(name):
+@click.option("--no-alerts", is_flag=True, help="Do not dispatch webhook alerts for this run")
+def check(name, no_alerts):
+    storage = get_storage()
+    monitor = get_monitor()
+
     if name:
-        watches = storage.load_watches()
-        watch = next((w for w in watches if w["name"] == name), None)
+        watch = storage.get_watch(name)
         if not watch:
             console.print(f"[red]Watch '{name}' not found.[/]")
             sys.exit(1)
@@ -153,12 +187,202 @@ def check(name):
             if len(r.get("diff", "")) > 2000:
                 console.print(f"[dim]... diff truncated (use 'pagewatch diff {r['name']}' for full diff)[/]")
 
+    if not no_alerts:
+        _print_deliveries(get_alert_manager().dispatch(results))
+
+
+@cli.command()
+@click.option("--once", is_flag=True, help="Process currently-due watches once, then exit")
+@click.option("--no-alerts", is_flag=True, help="Do not dispatch webhook alerts")
+def watch(once, no_alerts):
+    """Continuously monitor all watches, honoring each watch's interval."""
+    storage = get_storage()
+    monitor = get_monitor()
+    alert_manager = get_alert_manager()
+
+    watches = storage.load_watches()
+    if not watches:
+        console.print("[yellow]No watches configured. Use 'pagewatch add <url>' to add one.[/]")
+        return
+
+    def next_due(w, now):
+        last = w.get("last_checked")
+        interval = int(w.get("interval") or 3600)
+        if not last:
+            return now
+        try:
+            ts = datetime.fromisoformat(last).timestamp()
+        except ValueError:
+            return now
+        return max(now, ts + interval)
+
+    now = time.time()
+    next_run = {w["name"]: next_due(w, now) for w in watches}
+    console.print(f"[bold cyan]PageWatch[/] watching {len(watches)} page(s). Press Ctrl+C to stop.")
+
+    checked_any = False
+    try:
+        while True:
+            now = time.time()
+            for name in [n for n, t in next_run.items() if t <= now]:
+                checked_any = True
+                w = storage.get_watch(name)
+                if w is None:
+                    next_run.pop(name, None)
+                    continue
+                result = monitor.check_one(w)
+                stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+                if result.get("error"):
+                    console.print(f"[dim]{stamp}[/] [red]error[/] {name}: {result['error']}")
+                elif result["changed"]:
+                    console.print(f"[dim]{stamp}[/] [bold red]CHANGED[/] {name}")
+                    if result.get("diff"):
+                        console.print(result["diff"][:2000])
+                else:
+                    console.print(f"[dim]{stamp}[/] [green]no change[/] {name}")
+                if not no_alerts:
+                    _print_deliveries(alert_manager.dispatch([result]))
+                next_run[name] = time.time() + int(w.get("interval") or 3600)
+
+            if once:
+                if not checked_any:
+                    console.print("[dim]No watches due right now.[/]")
+                break
+            sleep_for = min(next_run.values()) - time.time()
+            time.sleep(min(max(sleep_for, 1), 60))
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped watching.[/]")
+
+
+@cli.command()
+@click.option("--format", "fmt", type=click.Choice(["json", "csv"]), default="json",
+              show_default=True, help="Export format")
+@click.option("--output", "-o", type=click.Path(dir_okay=False), default=None,
+              help="Write to a file instead of stdout")
+@click.option("--include-html", is_flag=True, help="Include raw HTML snapshots in JSON export")
+def export(fmt, output, include_html):
+    """Export watches and snapshot history as JSON or CSV."""
+    storage = get_storage()
+    watches = storage.load_watches()
+
+    if fmt == "json":
+        snapshots = {}
+        for w in watches:
+            snap = storage.load_snapshot(w["name"])
+            if not snap:
+                continue
+            latest = dict(snap.get("latest", {}))
+            if not include_html:
+                latest.pop("html", None)
+            entry = {"history": snap.get("history", []), "latest": latest}
+            if snap.get("previous"):
+                entry["previous"] = snap["previous"]
+            snapshots[w["name"]] = entry
+        data = {
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "pagewatch_version": __version__,
+            "watches": watches,
+            "snapshots": snapshots,
+        }
+        text = json.dumps(data, indent=2, ensure_ascii=False)
+    else:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["name", "url", "timestamp", "content_hash", "text_length"])
+        for w in watches:
+            snap = storage.load_snapshot(w["name"]) or {}
+            for entry in snap.get("history", []):
+                writer.writerow([
+                    w["name"], w["url"],
+                    entry.get("timestamp"), entry.get("content_hash"), entry.get("text_length"),
+                ])
+        text = buf.getvalue()
+
+    if output:
+        Path(output).write_text(text, encoding="utf-8")
+        console.print(f"[green]Exported to {output}[/]")
+    else:
+        click.echo(text, nl=False)
+        if not text.endswith("\n"):
+            click.echo()
+
+
+@cli.group()
+def alert():
+    """Manage webhook alert channels (generic, Slack, Discord, Feishu, DingTalk)."""
+
+
+@alert.command("add")
+@click.argument("url")
+@click.option("--name", "-n", default=None, help="Channel name (default: webhook-N)")
+@click.option("--format", "fmt", type=click.Choice(list(SUPPORTED_FORMATS)), default="generic",
+              show_default=True, help="Webhook payload format")
+@click.option("--events", type=click.Choice(list(SUPPORTED_EVENTS)), default="change",
+              show_default=True, help="Which events trigger this channel")
+def alert_add(url, name, fmt, events):
+    """Register a webhook URL to receive change/error alerts."""
+    try:
+        channel = get_alert_manager().add_channel(url, name=name, fmt=fmt, events=events)
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/]")
+        sys.exit(1)
+    console.print(f"[green]Added alert channel:[/] {channel['name']}")
+    console.print(f"  URL:    {channel['url']}")
+    console.print(f"  Format: {channel['format']}")
+    console.print(f"  Events: {channel['events']}")
+
+
+@alert.command("list")
+def alert_list():
+    """List configured alert channels."""
+    channels = get_alert_manager().list_channels()
+    if not channels:
+        console.print("[yellow]No alert channels configured. Use 'pagewatch alert add <url>' to add one.[/]")
+        return
+    table = Table(title="Alert Channels")
+    table.add_column("Name", style="cyan")
+    table.add_column("Format")
+    table.add_column("Events")
+    table.add_column("URL", style="dim")
+    for c in channels:
+        table.add_row(c.get("name"), c.get("format", "generic"), c.get("events", "change"), c.get("url", "")[:60])
+    console.print(table)
+
+
+@alert.command("remove")
+@click.argument("name")
+def alert_remove(name):
+    """Remove an alert channel by name."""
+    if get_alert_manager().remove_channel(name):
+        console.print(f"[green]Removed alert channel: {name}[/]")
+    else:
+        console.print(f"[red]Alert channel '{name}' not found.[/]")
+        sys.exit(1)
+
+
+@alert.command("test")
+@click.option("--name", "-n", default=None, help="Test a single channel by name (default: all)")
+def alert_test(name):
+    """Send a test alert to configured channels."""
+    manager = get_alert_manager()
+    try:
+        deliveries = manager.send_test(name)
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/]")
+        sys.exit(1)
+    if not deliveries:
+        console.print("[yellow]No alert channels configured. Use 'pagewatch alert add <url>' to add one.[/]")
+        return
+    _print_deliveries(deliveries)
+    if any(not d["ok"] for d in deliveries):
+        sys.exit(1)
+
 
 @cli.command()
 @click.argument("name")
 def diff(name):
-    watches = storage.load_watches()
-    watch = next((w for w in watches if w["name"] == name), None)
+    storage = get_storage()
+    watch = storage.get_watch(name)
     if not watch:
         console.print(f"[red]Watch '{name}' not found.[/]")
         sys.exit(1)
@@ -171,54 +395,37 @@ def diff(name):
     history = snapshot["history"]
     console.print(f"[dim]Snapshot history: {len(history)} entries[/]")
 
-    if len(history) < 2:
+    diff_output = get_monitor().diff(name)
+    if diff_output is None:
         latest = history[-1]
-        console.print(f"[yellow]Only one snapshot available (from {latest['timestamp']}). No diff possible yet.[/]")
-        return
-
-    latest_snap = history[-1]
-    prev_snap = history[-2]
-
-    latest_text = snapshot.get("latest", {}).get("full_text", "")
-    if not latest_text:
-        console.print("[red]Latest snapshot text is empty.[/]")
+        console.print(f"[yellow]Only one distinct snapshot so far (from {latest['timestamp']}). No diff possible yet.[/]")
         return
 
     console.print(f"\n[bold]Diff for {name}[/]")
-    console.print(f"[dim]  Latest:  {latest_snap['timestamp']}[/]")
-    console.print(f"[dim]  Previous: {prev_snap['timestamp']}[/]")
+    console.print(f"[dim]  Latest:   {snapshot.get('latest', {}).get('updated_at', '-')}[/]")
+    console.print(f"[dim]  Previous: {snapshot.get('previous', {}).get('updated_at', '-')}[/]")
     console.print()
 
-    old_text = ""
-    from .utils import compute_diff
-    for i in range(len(history) - 2, -1, -1):
-        if history[i].get("content_hash") != latest_snap.get("content_hash"):
-            prev_snap_data = storage.load_snapshot(name)
-            if prev_snap_data:
-                old_text = prev_snap_data.get("latest", {}).get("full_text", "")
-            if not old_text:
-                old_text = ""
-            break
-
-    diff_output = compute_diff(old_text, latest_text)
-    if diff_output:
-        for line in diff_output.split("\n"):
-            if line.startswith("---") or line.startswith("+++"):
-                console.print(f"[bold]{line}[/]")
-            elif line.startswith("@@"):
-                console.print(f"[cyan]{line}[/]")
-            elif line.startswith("+"):
-                console.print(f"[green]{line}[/]")
-            elif line.startswith("-"):
-                console.print(f"[red]{line}[/]")
-            else:
-                console.print(f"[dim]{line}[/]")
-    else:
+    if not diff_output:
         console.print("[yellow]No differences found.[/]")
+        return
+
+    for line in diff_output.split("\n"):
+        if line.startswith("---") or line.startswith("+++"):
+            console.print(f"[bold]{line}[/]")
+        elif line.startswith("@@"):
+            console.print(f"[cyan]{line}[/]")
+        elif line.startswith("+"):
+            console.print(f"[green]{line}[/]")
+        elif line.startswith("-"):
+            console.print(f"[red]{line}[/]")
+        else:
+            console.print(f"[dim]{line}[/]")
 
 
 @cli.command()
 def config():
+    storage = get_storage()
     cfg = storage.load_config()
     console.print("[bold]PageWatch Configuration[/]")
     console.print(f"  Config file: {storage._config_file}")
@@ -231,7 +438,7 @@ def config():
 @cli.command()
 @click.argument("name")
 def remove(name):
-    if storage.remove_watch(name):
+    if get_storage().remove_watch(name):
         console.print(f"[green]Removed watch: {name}[/]")
     else:
         console.print(f"[red]Watch '{name}' not found.[/]")

@@ -1,7 +1,6 @@
 #!/usr/bin/env python
-import functools
 import hashlib
-import re
+import os
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -61,13 +60,19 @@ def content_hash(text: str) -> str:
 
 def compute_diff(old_text: str, new_text: str) -> str:
     import difflib
-    old_lines = old_text.splitlines(keepends=True)
-    new_lines = new_text.splitlines(keepends=True)
-    diff = list(difflib.unified_diff(old_lines, new_lines, n=3))
-    return "".join(diff)
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
+    diff = difflib.unified_diff(old_lines, new_lines, n=3, lineterm="")
+    return "\n".join(diff)
 
 
 def data_dir() -> Path:
-    d = Path.home() / ".pagewatch"
+    """Return the pagewatch data directory.
+
+    Defaults to ~/.pagewatch; override with the PAGEWATCH_HOME environment
+    variable (useful for tests, containers, and multi-profile setups).
+    """
+    override = os.environ.get("PAGEWATCH_HOME")
+    d = Path(override).expanduser() if override else Path.home() / ".pagewatch"
     d.mkdir(parents=True, exist_ok=True)
     return d
