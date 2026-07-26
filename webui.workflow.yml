@@ -1,0 +1,30 @@
+name: Web UI
+
+on:
+  push:
+    branches: [main]
+    paths: ["apps/web/**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build dashboard
+        run: |
+          cd apps/web
+          npm install --no-audit --no-fund
+          npm run build
+      - name: Commit rebuilt assets
+        run: |
+          git config --local user.email "bot@pagewatch.tech"
+          git config --local user.name "pagewatch-bot"
+          git add src/pagewatch/webui
+          git diff --staged --quiet || git commit -m "chore: rebuild web dashboard assets"
+          git push

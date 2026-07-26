@@ -31,6 +31,7 @@
 ## Features
 
 - **CLI-First Design** — Pipe-friendly, scriptable, composable with your existing toolchain
+- **Local Web Dashboard** — `pagewatch serve` opens a React dashboard on localhost; data stays in local JSON files
 - **CSS Selector Support** — Monitor specific elements, ignore nav bars and footers
 - **Content Hashing** — SHA256-based change detection, fast and reliable
 - **Unified Diffs** — Color-coded text diffs show exactly what changed
@@ -63,9 +64,30 @@ pagewatch list
 
 # Show diff for a page
 pagewatch diff example-com
+
+# Or do it all from the local web dashboard
+pagewatch serve
 ```
 
 > **Tip:** For the hosted experience with a dashboard, visual screenshots, team collaboration, and 99.9% uptime, visit **[pagewatch.tech](https://pagewatch.tech/?ref=github-readme)**.
+
+## Web Dashboard
+
+```bash
+pagewatch serve                # opens http://127.0.0.1:8787
+pagewatch serve -p 9000 --no-browser
+```
+
+`pagewatch serve` starts a local dashboard (React) plus a JSON REST API
+(`/api/*`) on top of the exact same JSON-file storage the CLI uses — add and
+edit watches, run checks, read color-coded diffs, browse snapshot history,
+and manage alert channels and settings from the browser. No database, no
+external services, no authentication (localhost only by default — keep it
+that way unless you know what you're doing).
+
+The dashboard ships pre-built inside the package. Its source lives in
+[`apps/web`](apps/web/) (React + Vite); see the README there for the dev
+workflow.
 
 ## Usage
 
@@ -278,6 +300,15 @@ Love pagewatch but don't want to manage infrastructure? Check out **[pagewatch.t
 - 99.9% uptime SLA
 
 All CLI commands work the same way — the hosted version adds a powerful web interface on top.
+
+## Repository Layout
+
+```
+src/pagewatch/    Python package — CLI, monitor engine, alerts, REST server
+src/pagewatch/webui/  Pre-built dashboard assets (generated from apps/web)
+apps/web/         React + Vite source of the web dashboard
+tests/            pytest suite (CLI, engine, alerts, HTTP API)
+```
 
 ## License
 

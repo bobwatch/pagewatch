@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 — 2026-07-26
+
+### Added
+- **Local web dashboard**: `pagewatch serve` starts a dependency-free stdlib
+  HTTP server exposing a JSON REST API (`/api/*`) over the same disk-file
+  storage, and serves a React dashboard — watch CRUD with ignore patterns,
+  one-click checks, color-coded diff viewer, snapshot history, alert channel
+  management with test delivery, and settings (interval/proxy/retries).
+  Options: `--host`, `--port`, `--no-browser`. Localhost by default; no
+  authentication — do not expose to untrusted networks.
+- **`apps/web`**: React 19 + Vite source of the dashboard. `npm run build`
+  emits stable-named assets into `src/pagewatch/webui/`, which ship inside
+  the Python package (pip users need no Node.js). `npm run dev` proxies
+  `/api` to a running `pagewatch serve` for hot-reload development.
+- **CI**: a `Web UI` workflow rebuilds and commits the dashboard assets
+  whenever `apps/web/` changes.
+- Graceful fallback page when UI assets are missing (API stays available).
+- Official brand assets (`apps/web/src/public/`): `logo.svg` as favicon and
+  header mark; wordmark SVGs shipped alongside the dashboard.
+
 ## 0.3.0 — 2026-07-26
 
 ### Added

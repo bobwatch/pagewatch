@@ -58,7 +58,7 @@ def patched(monitor=None, alert_manager=None):
 def test_version_reports_current_version():
     result = CliRunner().invoke(cli, ["--version"])
     assert result.exit_code == 0
-    assert "0.3.0" in result.output
+    assert "0.4.0" in result.output
 
 
 def test_add_list_remove_watch():

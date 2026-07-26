@@ -688,6 +688,47 @@ def config_set(key, value):
 
 
 @cli.command()
+@click.option("--host", default="127.0.0.1", show_default=True, help="Address to bind")
+@click.option("--port", "-p", type=int, default=8787, show_default=True, help="Port to listen on")
+@click.option("--no-browser", is_flag=True, help="Do not open the dashboard in a browser")
+def serve(host, port, no_browser):
+    """Start the local web dashboard (REST API + UI)."""
+    import threading
+    import webbrowser
+
+    from .server import PagewatchServer
+
+    try:
+        server = PagewatchServer((host, port))
+    except OSError as exc:
+        console.print(f"[red]Cannot bind {host}:{port} — {exc}[/]")
+        sys.exit(1)
+
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    url = f"http://{display_host}:{port}"
+    ui_built = (server.webui_dir / "index.html").is_file()
+
+    console.print(f"[bold cyan]PageWatch[/] dashboard: [link={url}]{url}[/link]")
+    console.print(f"[dim]Data dir: {server.storage._root}[/]")
+    if not ui_built:
+        console.print("[yellow]Web UI assets not built — serving the JSON API with a placeholder page.[/]")
+        console.print("[dim]Build them with: cd apps/web && npm install && npm run build[/]")
+    if host not in ("127.0.0.1", "localhost"):
+        console.print("[yellow]Warning: no authentication — do not expose this server to untrusted networks.[/]")
+    console.print("[dim]Press Ctrl+C to stop.[/]")
+
+    if not no_browser:
+        threading.Timer(0.5, webbrowser.open, [url]).start()
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/]")
+    finally:
+        server.server_close()
+
+
+@cli.command()
 @click.argument("name")
 def remove(name):
     if get_storage().remove_watch(name):
