@@ -14,11 +14,28 @@ def tmp_storage():
 def test_config_defaults_and_roundtrip():
     with tmp_storage() as store:
         cfg = store.load_config()
-        assert cfg == {"interval": 3600, "alerts": {}, "proxy": None}
+        assert cfg == {"interval": 3600, "alerts": {}, "proxy": None, "retries": 2}
         cfg["interval"] = 60
         cfg["alerts"] = {"webhooks": [{"name": "x", "url": "https://h", "format": "generic", "events": "all"}]}
         store.save_config(cfg)
         assert store.load_config() == cfg
+
+
+def test_config_merges_defaults_into_legacy_files():
+    with tmp_storage() as store:
+        # A config written before new keys existed gains them on load.
+        store._config_file.write_text('{"interval": 120, "alerts": {}, "proxy": null}', encoding="utf-8")
+        cfg = store.load_config()
+        assert cfg["interval"] == 120
+        assert cfg["retries"] == 2
+
+
+def test_load_config_returns_isolated_copies():
+    with tmp_storage() as store:
+        first = store.load_config()
+        first["alerts"].setdefault("webhooks", []).append({"name": "x"})
+        second = store.load_config()
+        assert second["alerts"] == {}
 
 
 def test_add_get_and_list_watch():
@@ -33,7 +50,24 @@ def test_add_get_and_list_watch():
         assert w["selector"] == ".main"
         assert w["interval"] == 120
         assert w["last_hash"] is None
+        assert w["ignore_patterns"] == []
         assert store.get_watch("nope") is None
+
+
+def test_add_watch_persists_ignore_patterns():
+    with tmp_storage() as store:
+        store.add_watch("site", "https://example.com", ignore_patterns=[r"\d+ views"])
+        assert store.get_watch("site")["ignore_patterns"] == [r"\d+ views"]
+
+
+def test_restore_snapshot_roundtrip():
+    with tmp_storage() as store:
+        doc = {
+            "history": [{"timestamp": "t1", "content_hash": "h1", "text_length": 3}],
+            "latest": {"content_hash": "h1", "full_text": "abc", "updated_at": "t1"},
+        }
+        store.restore_snapshot("site", doc)
+        assert store.load_snapshot("site") == doc
 
 
 def test_update_watch_persists():

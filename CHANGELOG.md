@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0 — 2026-07-26
+
+### Added
+- **Noise filtering**: per-watch regex ignore patterns (`add --ignore`,
+  repeatable) drop matching text lines before hashing/diffing — no more false
+  alerts from timestamps, view counters, or rotating ads.
+- **`pagewatch update`**: edit a watch's URL, selector, interval, and ignore
+  patterns in place (`--add-ignore/--remove-ignore/--clear-ignore`,
+  `--clear-selector`). Content-affecting edits reset the baseline so the next
+  check re-establishes it without a false alert.
+- **Proxy support**: the long-dormant `proxy` config now works — checks route
+  through the configured HTTP(S) proxy.
+- **Fetch retries**: connection errors, timeouts, and 5xx responses retry
+  with exponential backoff (configurable via `config set retries N`, 0–10);
+  4xx responses fail fast.
+- **`pagewatch config set`**: change `interval`, `proxy`, `retries` from the
+  CLI (`proxy none` clears it). Bare `pagewatch config` still prints settings.
+- **Scripting outputs**: `check --json` prints machine-readable results plus
+  alert delivery reports; `check --fail-on-change` exits with status 2 when
+  a change was detected (cron/CI-friendly).
+- **`pagewatch history <name>`**: snapshot timeline with current/previous
+  markers (`--limit N`).
+- **`pagewatch import`**: restore watches and snapshot history from a
+  `pagewatch export` backup (merge by default, `--replace` to overwrite).
+- **`add --check-now`**: capture the baseline immediately when adding a watch.
+
+### Changed
+- Older `config.json` files are transparently upgraded with new default keys
+  on load.
+- `pagewatch list` shows each watch's ignore-pattern count.
+
 ## 0.2.0 — 2026-07-26
 
 ### Added

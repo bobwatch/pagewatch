@@ -34,9 +34,12 @@
 - **CSS Selector Support** — Monitor specific elements, ignore nav bars and footers
 - **Content Hashing** — SHA256-based change detection, fast and reliable
 - **Unified Diffs** — Color-coded text diffs show exactly what changed
+- **Noise Filtering** — Per-watch regex ignore patterns kill false positives from timestamps, counters, and ads
 - **Webhook Alerts** — Push change/error notifications to Slack, Discord, Feishu, DingTalk, or any JSON endpoint
 - **Daemon Mode** — `pagewatch watch` keeps checking continuously, honoring each page's interval
-- **Export** — One command to dump watches and change history as JSON or CSV
+- **Resilient Fetching** — Automatic retries with exponential backoff, optional HTTP(S) proxy
+- **Scripting-Ready** — `--json` output and `--fail-on-change` exit codes plug straight into cron and CI
+- **Backup & Restore** — Export watches and change history as JSON/CSV, re-import with one command
 - **JSON Storage** — All data stored locally, easy to inspect and export
 - **Change History** — Every check is saved, replay diffs and compare snapshots
 - **Simple & Lightweight** — Zero database required, just JSON files on disk
@@ -90,6 +93,24 @@ pagewatch check
 pagewatch check --name api-docs
 ```
 
+### Silence noisy elements (ignore patterns)
+
+Pages full of timestamps, view counters, or rotating ads trigger false alerts.
+Give a watch regex ignore patterns — matching text lines are dropped before
+hashing and diffing:
+
+```bash
+pagewatch add https://example.com/pricing --name pricing \
+  --ignore "Updated at \d{4}" --ignore "\d+ views" --check-now
+
+# Tune an existing watch
+pagewatch update pricing --add-ignore "^Ad:" --remove-ignore "\d+ views"
+```
+
+`--check-now` fetches immediately so the baseline is captured at add time.
+Editing the URL, selector, or ignore patterns resets the baseline — the next
+check re-establishes it without firing a false alert.
+
 ### Watch continuously (daemon mode)
 
 ```bash
@@ -121,7 +142,20 @@ pagewatch alert remove slack-ops
 Channels subscribe to `change` events (default), `error` events, or `all`.
 Every `pagewatch check` and `pagewatch watch` run dispatches alerts automatically (skip with `--no-alerts`).
 
-### Export data
+### Script it (JSON output & exit codes)
+
+```bash
+# Machine-readable results + alert delivery reports
+pagewatch check --json | jq '.results[] | select(.changed) | .name'
+
+# Exit code 2 when something changed — perfect for cron/CI pipelines
+pagewatch check --fail-on-change && echo "nothing changed"
+
+# Inspect a watch's snapshot timeline
+pagewatch history pricing --limit 10
+```
+
+### Export & restore
 
 ```bash
 # Full JSON backup of watches + change history (add --include-html for raw snapshots)
@@ -129,6 +163,17 @@ pagewatch export > backup.json
 
 # Change history as CSV, straight into your spreadsheet or BI tool
 pagewatch export --format csv -o history.csv
+
+# Restore on another machine (merge by default, --replace to overwrite)
+pagewatch import backup.json
+```
+
+### Proxy & retries
+
+```bash
+pagewatch config set proxy http://127.0.0.1:7890   # route checks through a proxy ('none' to clear)
+pagewatch config set retries 4                     # retry connection errors and 5xx with backoff
+pagewatch config set interval 1800                 # default interval for new setups
 ```
 
 ### View diff between snapshots
@@ -161,10 +206,12 @@ All configuration is stored in `~/.pagewatch/` (override the location with the `
 
 ```
 ~/.pagewatch/
-  config.json     — global settings (intervals, alert webhooks, proxy)
-  watches.json    — list of monitored pages
+  config.json     — global settings (interval, alert webhooks, proxy, retries)
+  watches.json    — list of monitored pages (incl. per-watch ignore patterns)
   snapshots/      — per-page snapshot history (JSON)
 ```
+
+Change settings with `pagewatch config set <key> <value>` (keys: `interval`, `proxy`, `retries`).
 
 Alert channels live in `config.json` under `alerts.webhooks`, e.g.:
 

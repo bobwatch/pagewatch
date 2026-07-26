@@ -1,10 +1,18 @@
 #!/usr/bin/env python
+import copy
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from .utils import data_dir
+
+DEFAULT_CONFIG: dict[str, Any] = {
+    "interval": 3600,
+    "alerts": {},
+    "proxy": None,
+    "retries": 2,
+}
 
 
 class Storage:
@@ -17,9 +25,13 @@ class Storage:
         self._snapshots_dir.mkdir(exist_ok=True)
 
     def load_config(self) -> dict[str, Any]:
+        """Load config, merging defaults so older config files gain new keys."""
+        config = copy.deepcopy(DEFAULT_CONFIG)
         if self._config_file.is_file():
-            return json.loads(self._config_file.read_text(encoding="utf-8"))
-        return {"interval": 3600, "alerts": {}, "proxy": None}
+            loaded = json.loads(self._config_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                config.update(loaded)
+        return config
 
     def save_config(self, config: dict[str, Any]) -> None:
         self._config_file.write_text(
@@ -42,13 +54,21 @@ class Storage:
                 return w
         return None
 
-    def add_watch(self, name: str, url: str, selector: str | None = None, interval: int = 3600) -> dict[str, Any]:
+    def add_watch(
+        self,
+        name: str,
+        url: str,
+        selector: str | None = None,
+        interval: int = 3600,
+        ignore_patterns: list[str] | None = None,
+    ) -> dict[str, Any]:
         watches = self.load_watches()
         watch = {
             "name": name,
             "url": url,
             "selector": selector,
             "interval": interval,
+            "ignore_patterns": list(ignore_patterns or []),
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_checked": None,
             "last_hash": None,
@@ -82,6 +102,13 @@ class Storage:
         if snap_file.is_file():
             return json.loads(snap_file.read_text(encoding="utf-8"))
         return None
+
+    def restore_snapshot(self, name: str, data: dict[str, Any]) -> None:
+        """Write a full snapshot document (e.g. from a backup) as-is."""
+        snap_file = self._snapshots_dir / f"{name}.json"
+        snap_file.write_text(
+            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
     def save_snapshot(self, name: str, content_hash: str, full_text: str, html: str) -> dict[str, Any]:
         snap_file = self._snapshots_dir / f"{name}.json"

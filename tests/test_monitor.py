@@ -93,6 +93,38 @@ def test_check_all_covers_every_watch():
         assert {r["name"] for r in results} == {"a", "b"}
 
 
+PAGE_NOISY_V1 = "<html><body><p>price: 100</p><p>updated at 11:00:00</p></body></html>"
+PAGE_NOISY_V2 = "<html><body><p>price: 100</p><p>updated at 12:34:56</p></body></html>"
+PAGE_NOISY_V3 = "<html><body><p>price: 200</p><p>updated at 13:00:00</p></body></html>"
+
+
+def test_ignore_patterns_suppress_noisy_changes():
+    with env(PAGE_NOISY_V1, PAGE_NOISY_V2) as (store, monitor):
+        store.add_watch("w", "https://x.test", ignore_patterns=[r"updated at \d"])
+        first = monitor.check_one(store.get_watch("w"))
+        second = monitor.check_one(store.get_watch("w"))
+        assert second["changed"] is False
+        assert second["current_hash"] == first["current_hash"]
+
+
+def test_ignore_patterns_still_detect_real_changes():
+    with env(PAGE_NOISY_V1, PAGE_NOISY_V3) as (store, monitor):
+        store.add_watch("w", "https://x.test", ignore_patterns=[r"updated at \d"])
+        monitor.check_one(store.get_watch("w"))
+        result = monitor.check_one(store.get_watch("w"))
+        assert result["changed"] is True
+        assert "+price: 200" in result["diff"]
+        assert "updated at" not in result["diff"]
+
+
+def test_without_ignore_patterns_noise_triggers_change():
+    with env(PAGE_NOISY_V1, PAGE_NOISY_V2) as (store, monitor):
+        store.add_watch("w", "https://x.test")
+        monitor.check_one(store.get_watch("w"))
+        result = monitor.check_one(store.get_watch("w"))
+        assert result["changed"] is True
+
+
 def test_diff_uses_previous_distinct_snapshot():
     with env(PAGE_V1, PAGE_V2) as (store, monitor):
         store.add_watch("w", "https://x.test")

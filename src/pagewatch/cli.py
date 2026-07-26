@@ -2,6 +2,7 @@
 import csv
 import io
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from .storage import Storage
 from .utils import is_valid_url, normalize_url
 
 console = Console()
+
+CONFIG_KEYS = ("interval", "proxy", "retries")
 
 
 def get_storage() -> Storage:
@@ -53,6 +56,15 @@ def _print_deliveries(deliveries):
             console.print(f"[red]Alert failed[/] via '{d['channel']}' ({d['event']}): {d['error']}")
 
 
+def _validate_patterns(patterns):
+    for pattern in patterns:
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            console.print(f"[red]Error: invalid regex '{pattern}': {exc}[/]")
+            sys.exit(1)
+
+
 @click.group()
 @click.version_option(version=__version__, prog_name="pagewatch")
 @click.pass_context
@@ -63,19 +75,13 @@ def cli(ctx):
 @cli.command()
 def init():
     storage = get_storage()
-    config = storage.load_config()
-    if not config or config == {"interval": 3600, "alerts": {}, "proxy": None}:
-        config = {
-            "interval": 3600,
-            "alerts": {},
-            "proxy": None,
-        }
-        storage.save_config(config)
-        console.print("[green]Initialized PageWatch configuration.[/]")
-        console.print(f"[dim]Config stored at: {storage._config_file}[/]")
-    else:
+    if storage._config_file.is_file():
         console.print("[yellow]Configuration already exists.[/]")
         console.print(f"[dim]Config at: {storage._config_file}[/]")
+    else:
+        storage.save_config(storage.load_config())
+        console.print("[green]Initialized PageWatch configuration.[/]")
+        console.print(f"[dim]Config stored at: {storage._config_file}[/]")
 
     console.print()
     console.print(
@@ -90,7 +96,10 @@ def init():
 @click.option("--name", "-n", help="Friendly name for this watch")
 @click.option("--selector", "-s", help="CSS selector to monitor a specific element")
 @click.option("--interval", "-i", type=int, default=3600, help="Check interval in seconds (default: 3600)")
-def add(url, name, selector, interval):
+@click.option("--ignore", "ignore", multiple=True,
+              help="Regex: matching text lines are ignored (repeatable). Great for timestamps/counters.")
+@click.option("--check-now", is_flag=True, help="Fetch immediately to establish the baseline")
+def add(url, name, selector, interval, ignore, check_now):
     url = normalize_url(url)
     if not is_valid_url(url):
         console.print(f"[red]Error: Invalid URL '{url}'[/]")
@@ -101,17 +110,101 @@ def add(url, name, selector, interval):
         parsed = urlparse(url)
         name = parsed.netloc.replace(".", "-")
 
+    _validate_patterns(ignore)
+
     storage = get_storage()
     if storage.get_watch(name):
         console.print(f"[red]Error: A watch named '{name}' already exists.[/]")
         sys.exit(1)
 
-    storage.add_watch(name=name, url=url, selector=selector, interval=interval)
+    watch = storage.add_watch(name=name, url=url, selector=selector, interval=interval,
+                              ignore_patterns=list(ignore))
     console.print(f"[green]Added watch:[/] {name}")
     console.print(f"  URL:      {url}")
     if selector:
         console.print(f"  Selector: {selector}")
     console.print(f"  Interval: {interval}s")
+    if ignore:
+        console.print(f"  Ignoring: {len(ignore)} pattern(s)")
+
+    if check_now:
+        result = get_monitor().check_one(watch)
+        if result.get("error"):
+            console.print(f"[red]Baseline check failed: {result['error']}[/]")
+            sys.exit(1)
+        console.print(f"[green]Baseline captured[/] (hash {result['current_hash'][:12]})")
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--url", default=None, help="New URL to monitor")
+@click.option("--selector", "-s", default=None, help="New CSS selector")
+@click.option("--clear-selector", is_flag=True, help="Remove the CSS selector")
+@click.option("--interval", "-i", type=int, default=None, help="New check interval in seconds")
+@click.option("--add-ignore", multiple=True, help="Add an ignore regex (repeatable)")
+@click.option("--remove-ignore", multiple=True, help="Remove an ignore regex (repeatable)")
+@click.option("--clear-ignore", is_flag=True, help="Remove all ignore patterns")
+def update(name, url, selector, clear_selector, interval, add_ignore, remove_ignore, clear_ignore):
+    """Modify an existing watch (URL, selector, interval, ignore patterns)."""
+    storage = get_storage()
+    watch = storage.get_watch(name)
+    if not watch:
+        console.print(f"[red]Watch '{name}' not found.[/]")
+        sys.exit(1)
+
+    changes = {}
+    reset_baseline = False
+
+    if url is not None:
+        new_url = normalize_url(url)
+        if not is_valid_url(new_url):
+            console.print(f"[red]Error: Invalid URL '{new_url}'[/]")
+            sys.exit(1)
+        changes["url"] = new_url
+        reset_baseline = True
+
+    if clear_selector:
+        changes["selector"] = None
+        reset_baseline = True
+    elif selector is not None:
+        changes["selector"] = selector
+        reset_baseline = True
+
+    if interval is not None:
+        if interval <= 0:
+            console.print("[red]Error: interval must be a positive number of seconds.[/]")
+            sys.exit(1)
+        changes["interval"] = interval
+
+    if clear_ignore or add_ignore or remove_ignore:
+        _validate_patterns(add_ignore)
+        patterns = [] if clear_ignore else list(watch.get("ignore_patterns") or [])
+        for pattern in remove_ignore:
+            if pattern in patterns:
+                patterns.remove(pattern)
+            else:
+                console.print(f"[yellow]Pattern not present, skipping: {pattern}[/]")
+        for pattern in add_ignore:
+            if pattern not in patterns:
+                patterns.append(pattern)
+        changes["ignore_patterns"] = patterns
+        reset_baseline = True
+
+    if not changes:
+        console.print("[yellow]Nothing to update. See 'pagewatch update --help' for options.[/]")
+        return
+
+    if reset_baseline:
+        changes["last_hash"] = None
+
+    storage.update_watch(name, **changes)
+    console.print(f"[green]Updated watch:[/] {name}")
+    for key, value in changes.items():
+        if key == "last_hash":
+            continue
+        console.print(f"  {key}: {value}")
+    if reset_baseline:
+        console.print("[dim]Baseline reset — the next check re-establishes it without alerting.[/]")
 
 
 @cli.command("list")
@@ -126,17 +219,20 @@ def list_watches():
     table.add_column("URL", style="dim")
     table.add_column("Selector")
     table.add_column("Interval")
+    table.add_column("Ignores")
     table.add_column("Last Checked")
     table.add_column("Status")
 
     for w in watches:
         last = w.get("last_checked") or "Never"
         status = "[green]active[/]" if w.get("last_hash") else "[yellow]pending[/]"
+        n_ignores = len(w.get("ignore_patterns") or [])
         table.add_row(
             w["name"],
             w["url"][:50],
             w.get("selector") or "-",
             f"{w.get('interval', '-')}s",
+            str(n_ignores) if n_ignores else "-",
             last[:19] if last != "Never" else last,
             status,
         )
@@ -147,48 +243,64 @@ def list_watches():
 @cli.command()
 @click.option("--name", "-n", help="Check a specific watch by name")
 @click.option("--no-alerts", is_flag=True, help="Do not dispatch webhook alerts for this run")
-def check(name, no_alerts):
+@click.option("--json", "as_json", is_flag=True, help="Print machine-readable JSON instead of tables")
+@click.option("--fail-on-change", is_flag=True, help="Exit with status 2 when any change is detected")
+def check(name, no_alerts, as_json, fail_on_change):
     storage = get_storage()
     monitor = get_monitor()
 
     if name:
         watch = storage.get_watch(name)
         if not watch:
-            console.print(f"[red]Watch '{name}' not found.[/]")
+            if as_json:
+                click.echo(json.dumps({"error": f"watch '{name}' not found"}))
+            else:
+                console.print(f"[red]Watch '{name}' not found.[/]")
             sys.exit(1)
         results = [monitor.check_one(watch)]
     else:
-        console.print("[dim]Checking all watches...[/]")
+        if not as_json:
+            console.print("[dim]Checking all watches...[/]")
         results = monitor.check_all()
 
     if not results:
-        console.print("[yellow]No watches to check.[/]")
+        if as_json:
+            click.echo(json.dumps({"results": [], "alerts": []}))
+        else:
+            console.print("[yellow]No watches to check.[/]")
         return
 
-    table = Table(title="Check Results")
-    table.add_column("Name", style="cyan")
-    table.add_column("URL", style="dim")
-    table.add_column("Changed", justify="center")
-    table.add_column("Hash")
-    table.add_column("Error")
+    deliveries = [] if no_alerts else get_alert_manager().dispatch(results)
 
-    for r in results:
-        changed = "[bold red]YES[/]" if r["changed"] else "[green]no[/]"
-        h = r.get("current_hash", "-")[:12]
-        err = r.get("error") or "-"
-        table.add_row(r["name"], r["url"][:40], changed, h, err)
+    if as_json:
+        click.echo(json.dumps({"results": results, "alerts": deliveries}, indent=2, ensure_ascii=False))
+    else:
+        table = Table(title="Check Results")
+        table.add_column("Name", style="cyan")
+        table.add_column("URL", style="dim")
+        table.add_column("Changed", justify="center")
+        table.add_column("Hash")
+        table.add_column("Error")
 
-    console.print(table)
+        for r in results:
+            changed = "[bold red]YES[/]" if r["changed"] else "[green]no[/]"
+            h = r.get("current_hash", "-")[:12]
+            err = r.get("error") or "-"
+            table.add_row(r["name"], r["url"][:40], changed, h, err)
 
-    for r in results:
-        if r["changed"] and r.get("diff"):
-            console.print(f"\n[bold cyan]{r['name']}[/] — Changes detected:")
-            console.print(r["diff"][:2000])
-            if len(r.get("diff", "")) > 2000:
-                console.print(f"[dim]... diff truncated (use 'pagewatch diff {r['name']}' for full diff)[/]")
+        console.print(table)
 
-    if not no_alerts:
-        _print_deliveries(get_alert_manager().dispatch(results))
+        for r in results:
+            if r["changed"] and r.get("diff"):
+                console.print(f"\n[bold cyan]{r['name']}[/] — Changes detected:")
+                console.print(r["diff"][:2000])
+                if len(r.get("diff", "")) > 2000:
+                    console.print(f"[dim]... diff truncated (use 'pagewatch diff {r['name']}' for full diff)[/]")
+
+        _print_deliveries(deliveries)
+
+    if fail_on_change and any(r.get("changed") for r in results):
+        sys.exit(2)
 
 
 @cli.command()
@@ -255,6 +367,53 @@ def watch(once, no_alerts):
 
 
 @cli.command()
+@click.argument("name")
+@click.option("--limit", "-l", type=int, default=20, show_default=True, help="Show the last N entries")
+def history(name, limit):
+    """Show the snapshot history of a watch."""
+    storage = get_storage()
+    if not storage.get_watch(name):
+        console.print(f"[red]Watch '{name}' not found.[/]")
+        sys.exit(1)
+
+    snapshot = storage.load_snapshot(name)
+    if not snapshot or not snapshot.get("history"):
+        console.print(f"[yellow]No snapshot history for '{name}'. Run 'pagewatch check' first.[/]")
+        return
+
+    entries = snapshot["history"]
+    shown = entries[-max(1, limit):]
+    latest_hash = snapshot.get("latest", {}).get("content_hash")
+    prev_hash = snapshot.get("previous", {}).get("content_hash")
+
+    table = Table(title=f"History — {name} (showing {len(shown)} of {len(entries)})")
+    table.add_column("#", justify="right")
+    table.add_column("Timestamp")
+    table.add_column("Hash")
+    table.add_column("Text Length", justify="right")
+    table.add_column("Note")
+
+    start = len(entries) - len(shown)
+    for i, entry in enumerate(shown, start=start + 1):
+        h = entry.get("content_hash", "")
+        if h and h == latest_hash:
+            note = "current"
+        elif h and h == prev_hash:
+            note = "previous"
+        else:
+            note = ""
+        table.add_row(
+            str(i),
+            str(entry.get("timestamp", ""))[:19],
+            h[:12],
+            str(entry.get("text_length", "")),
+            note,
+        )
+
+    console.print(table)
+
+
+@cli.command()
 @click.option("--format", "fmt", type=click.Choice(["json", "csv"]), default="json",
               show_default=True, help="Export format")
 @click.option("--output", "-o", type=click.Path(dir_okay=False), default=None,
@@ -305,6 +464,59 @@ def export(fmt, output, include_html):
         click.echo(text, nl=False)
         if not text.endswith("\n"):
             click.echo()
+
+
+@cli.command("import")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--replace", is_flag=True, help="Replace the existing watch list instead of merging")
+def import_cmd(file, replace):
+    """Import watches and snapshots from a 'pagewatch export' JSON file."""
+    storage = get_storage()
+    try:
+        data = json.loads(Path(file).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        console.print(f"[red]Cannot read backup: {exc}[/]")
+        sys.exit(1)
+
+    watches = data.get("watches") if isinstance(data, dict) else None
+    if not isinstance(watches, list):
+        console.print("[red]Invalid backup: missing 'watches' list.[/]")
+        sys.exit(1)
+
+    incoming = [w for w in watches if isinstance(w, dict) and w.get("name") and w.get("url")]
+    snapshots = data.get("snapshots") or {}
+
+    if replace:
+        for w in storage.load_watches():
+            storage.remove_watch(w["name"])
+        storage.save_watches(incoming)
+        imported = [w["name"] for w in incoming]
+        skipped = []
+    else:
+        current = storage.load_watches()
+        existing_names = {w["name"] for w in current}
+        imported, skipped = [], []
+        for w in incoming:
+            if w["name"] in existing_names:
+                skipped.append(w["name"])
+                continue
+            current.append(w)
+            imported.append(w["name"])
+        storage.save_watches(current)
+
+    restored = 0
+    for wname in imported:
+        snap = snapshots.get(wname)
+        if isinstance(snap, dict) and snap.get("history"):
+            storage.restore_snapshot(wname, snap)
+            restored += 1
+
+    message = f"[green]Imported {len(imported)} watch(es)[/]"
+    if skipped:
+        message += f", skipped {len(skipped)} existing"
+    console.print(message)
+    if restored:
+        console.print(f"[dim]Restored snapshot history for {restored} watch(es).[/]")
 
 
 @cli.group()
@@ -392,12 +604,12 @@ def diff(name):
         console.print(f"[yellow]No snapshot history for '{name}'. Run 'pagewatch check' first.[/]")
         return
 
-    history = snapshot["history"]
-    console.print(f"[dim]Snapshot history: {len(history)} entries[/]")
+    entries = snapshot["history"]
+    console.print(f"[dim]Snapshot history: {len(entries)} entries[/]")
 
     diff_output = get_monitor().diff(name)
     if diff_output is None:
-        latest = history[-1]
+        latest = entries[-1]
         console.print(f"[yellow]Only one distinct snapshot so far (from {latest['timestamp']}). No diff possible yet.[/]")
         return
 
@@ -423,8 +635,12 @@ def diff(name):
             console.print(f"[dim]{line}[/]")
 
 
-@cli.command()
-def config():
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def config(ctx):
+    """Show configuration, or change it with 'pagewatch config set'."""
+    if ctx.invoked_subcommand is not None:
+        return
     storage = get_storage()
     cfg = storage.load_config()
     console.print("[bold]PageWatch Configuration[/]")
@@ -433,6 +649,42 @@ def config():
     console.print(f"  Snapshots:   {storage._snapshots_dir}")
     console.print()
     console.print_json(data=cfg)
+
+
+@config.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key, value):
+    """Set a config value. Keys: interval, proxy, retries ('none' clears proxy)."""
+    storage = get_storage()
+    cfg = storage.load_config()
+
+    if key == "interval":
+        try:
+            parsed = int(value)
+        except ValueError:
+            parsed = 0
+        if parsed <= 0:
+            console.print("[red]Error: interval must be a positive integer (seconds).[/]")
+            sys.exit(1)
+        cfg["interval"] = parsed
+    elif key == "retries":
+        try:
+            parsed = int(value)
+        except ValueError:
+            parsed = -1
+        if not 0 <= parsed <= 10:
+            console.print("[red]Error: retries must be an integer between 0 and 10.[/]")
+            sys.exit(1)
+        cfg["retries"] = parsed
+    elif key == "proxy":
+        cfg["proxy"] = None if value.strip().lower() in ("none", "null", "") else value.strip()
+    else:
+        console.print(f"[red]Error: unknown key '{key}'. Valid keys: {', '.join(CONFIG_KEYS)}[/]")
+        sys.exit(1)
+
+    storage.save_config(cfg)
+    console.print(f"[green]Set {key} = {cfg[key]}[/]")
 
 
 @cli.command()
