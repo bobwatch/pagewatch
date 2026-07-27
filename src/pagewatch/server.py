@@ -345,13 +345,13 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def h_pause_watch(self, name, query=None):
         with self.server.write_lock:
-            watch = self._get_watch_or_404(name)
+            self._get_watch_or_404(name)
             self.server.storage.update_watch(name, paused=True)
         self._send_json(200, {"name": name, "paused": True})
 
     def h_resume_watch(self, name, query=None):
         with self.server.write_lock:
-            watch = self._get_watch_or_404(name)
+            self._get_watch_or_404(name)
             self.server.storage.update_watch(name, paused=False)
         self._send_json(200, {"name": name, "paused": False})
 
