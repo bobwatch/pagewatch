@@ -154,7 +154,7 @@ def test_check_flow_with_alerts():
         assert data["result"]["changed"] is True
         assert "+version two" in data["result"]["diff"]
         assert len(session.posts) == 1
-        assert len(data["alerts"]) == 1
+        assert len(data["alerts"]) == 2  # 1 webhook + 1 email report (email not configured)
 
         # alerts can be suppressed
         requests.patch(f"{base}/api/watches/t1", json={"ignore_patterns": []}, timeout=5)  # reset baseline
@@ -207,7 +207,7 @@ def test_config_endpoints():
 def test_alert_endpoints():
     with running_server() as (base, _store, _session):
         r = requests.post(f"{base}/api/alerts", json={"url": "https://hooks.example/a", "name": "ops",
-                                                      "format": "feishu", "events": "all"}, timeout=5)
+                                                       "format": "feishu", "events": "all"}, timeout=5)
         assert r.status_code == 201
 
         assert requests.post(f"{base}/api/alerts", json={"url": "bad"}, timeout=5).status_code == 400
@@ -221,6 +221,56 @@ def test_alert_endpoints():
 
         assert requests.delete(f"{base}/api/alerts/ops", timeout=5).status_code == 200
         assert requests.delete(f"{base}/api/alerts/ops", timeout=5).status_code == 404
+
+
+def test_pause_resume_endpoints():
+    with running_server(PAGE_V1) as (base, store, _session):
+        requests.post(f"{base}/api/watches", json={"url": "x.test", "name": "t1"}, timeout=5)
+
+        r = requests.post(f"{base}/api/watches/t1/pause", timeout=5)
+        assert r.status_code == 200
+        assert r.json()["paused"] is True
+        assert store.get_watch("t1")["paused"] is True
+
+        r = requests.post(f"{base}/api/watches/t1/resume", timeout=5)
+        assert r.status_code == 200
+        assert r.json()["paused"] is False
+        assert store.get_watch("t1")["paused"] is False
+
+        assert requests.post(f"{base}/api/watches/nope/pause", timeout=5).status_code == 404
+
+
+def test_email_config_endpoints():
+    with running_server() as (base, _store, _session):
+        r = requests.get(f"{base}/api/alerts/email", timeout=5)
+        assert r.status_code == 200
+        assert r.json().get("smtp_host", "") == ""
+
+        r = requests.put(f"{base}/api/alerts/email", json={
+            "smtp_host": "smtp.test.com",
+            "smtp_port": 587,
+            "smtp_user": "user@test.com",
+            "smtp_pass": "secret",
+            "to_addrs": "alerts@test.com",
+        }, timeout=5)
+        assert r.status_code == 200
+        assert r.json()["smtp_host"] == "smtp.test.com"
+        assert r.json()["smtp_pass_set"] is True
+
+        r = requests.get(f"{base}/api/alerts/email", timeout=5)
+        assert r.json()["smtp_host"] == "smtp.test.com"
+        assert "smtp_pass" not in r.json()  # password is never returned
+        assert r.json()["smtp_pass_set"] is True
+
+
+def test_status_includes_paused_count():
+    with running_server() as (base, store, _session):
+        store.add_watch("t1", "https://x.test")
+        store.add_watch("t2", "https://y.test", paused=True)
+        data = requests.get(f"{base}/api/status", timeout=5).json()
+        assert data["watch_count"] == 2
+        assert data["paused_count"] == 1
+        assert data["email_configured"] is False
 
 
 def test_unknown_api_route_is_404_json():

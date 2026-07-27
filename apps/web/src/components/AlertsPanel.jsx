@@ -8,6 +8,7 @@ const FALLBACK_EVENTS = ["change", "error", "all"];
 export default function AlertsPanel({ toast, status, onDataChanged }) {
   const formats = status?.alert_formats || FALLBACK_FORMATS;
   const events = status?.alert_events || FALLBACK_EVENTS;
+  const emailConfigured = status?.email_configured;
 
   const [channels, setChannels] = useState(null);
   const [url, setUrl] = useState("");
@@ -15,6 +16,17 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
   const [format, setFormat] = useState("generic");
   const [eventKind, setEventKind] = useState("change");
   const [busy, setBusy] = useState({});
+
+  // Email config state
+  const [emailCfg, setEmailCfg] = useState(null);
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("587");
+  const [smtpUser, setSmtpUser] = useState("");
+  const [smtpPass, setSmtpPass] = useState("");
+  const [smtpTls, setSmtpTls] = useState(true);
+  const [fromAddr, setFromAddr] = useState("");
+  const [toAddrs, setToAddrs] = useState("");
+  const [emailSaving, setEmailSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -25,9 +37,25 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
     }
   }, [toast]);
 
+  const loadEmail = useCallback(async () => {
+    try {
+      const cfg = await api.emailConfig();
+      setEmailCfg(cfg);
+      setSmtpHost(cfg.smtp_host || "");
+      setSmtpPort(String(cfg.smtp_port || 587));
+      setSmtpUser(cfg.smtp_user || "");
+      setSmtpTls(cfg.smtp_tls !== false);
+      setFromAddr(cfg.from_addr || "");
+      setToAddrs(cfg.to_addrs || "");
+    } catch {
+      // email not configured
+    }
+  }, []);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadEmail();
+  }, [load, loadEmail]);
 
   async function addChannel(event) {
     event.preventDefault();
@@ -74,6 +102,29 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
       toast(err.message, "err");
     } finally {
       setBusy((current) => ({ ...current, [key]: false }));
+    }
+  }
+
+  async function saveEmailConfig(event) {
+    event.preventDefault();
+    setEmailSaving(true);
+    try {
+      const saved = await api.saveEmailConfig({
+        smtp_host: smtpHost,
+        smtp_port: Number(smtpPort),
+        smtp_user: smtpUser || null,
+        smtp_pass: smtpPass || null,
+        smtp_tls: smtpTls,
+        from_addr: fromAddr || null,
+        to_addrs: toAddrs,
+      });
+      setEmailCfg(saved);
+      toast("Email settings saved", "ok");
+      onDataChanged();
+    } catch (err) {
+      toast(err.message, "err");
+    } finally {
+      setEmailSaving(false);
     }
   }
 
@@ -159,6 +210,51 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
           </table>
         </div>
       )}
+
+      <div className="card form-card" style={{ marginTop: "1.5rem" }}>
+        <h3>Email alerts (SMTP)</h3>
+        <form onSubmit={saveEmailConfig} className="settings-form">
+          <div className="field">
+            <label htmlFor="smtp-host">SMTP host</label>
+            <input id="smtp-host" required placeholder="smtp.gmail.com"
+                   value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="smtp-port">SMTP port</label>
+            <input id="smtp-port" type="number" min="1" max="65535" required
+                   value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="smtp-user">SMTP user (optional)</label>
+            <input id="smtp-user" placeholder="user@gmail.com"
+                   value={smtpUser} onChange={(e) => setSmtpUser(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="smtp-pass">SMTP password (optional)</label>
+            <input id="smtp-pass" type="password" placeholder={emailCfg?.smtp_pass_set ? "(unchanged)" : ""}
+                   value={smtpPass} onChange={(e) => setSmtpPass(e.target.value)} />
+          </div>
+          <label className="check-label">
+            <input type="checkbox" checked={smtpTls} onChange={(e) => setSmtpTls(e.target.checked)} />
+            Use TLS (STARTTLS)
+          </label>
+          <div className="field">
+            <label htmlFor="from-addr">From address (optional)</label>
+            <input id="from-addr" placeholder="pagewatch@example.com"
+                   value={fromAddr} onChange={(e) => setFromAddr(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="to-addrs">Recipients (comma-separated)</label>
+            <input id="to-addrs" required placeholder="alerts@example.com, team@example.com"
+                   value={toAddrs} onChange={(e) => setToAddrs(e.target.value)} />
+          </div>
+          <div>
+            <button type="submit" className="btn btn-primary" disabled={emailSaving}>
+              {emailSaving ? <Spinner /> : "Save email settings"}
+            </button>
+          </div>
+        </form>
+      </div>
     </section>
   );
 }

@@ -299,3 +299,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   .cell-url { max-width: 160px; }
   .drawer { width: 100%; }
 }
+
+.row-muted {
+  opacity: 0.55;
+}

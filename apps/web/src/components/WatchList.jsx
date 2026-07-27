@@ -5,6 +5,7 @@ import WatchForm from "./WatchForm";
 import { Badge, EmptyState, Spinner, timeAgo } from "./common";
 
 function statusBadge(watch, result) {
+  if (watch.paused) return <Badge tone="warn">paused</Badge>;
   if (result?.error) return <Badge tone="err" title={result.error}>error</Badge>;
   if (result?.changed) return <Badge tone="warn">CHANGED</Badge>;
   if (result) return <Badge tone="ok">no change</Badge>;
@@ -88,6 +89,22 @@ export default function WatchList({ toast, onDataChanged }) {
     }
   }
 
+  async function togglePause(watch) {
+    try {
+      if (watch.paused) {
+        await api.resumeWatch(watch.name);
+        toast(`Resumed ${watch.name}`, "ok");
+      } else {
+        await api.pauseWatch(watch.name);
+        toast(`Paused ${watch.name}`, "warn");
+      }
+      await load();
+      onDataChanged();
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  }
+
   async function formDone() {
     setShowAdd(false);
     setEditing(null);
@@ -120,52 +137,60 @@ export default function WatchList({ toast, onDataChanged }) {
 
       {watches && watches.length > 0 && (
         <div className="card">
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>URL</th>
-                <th>Interval</th>
-                <th>Ignores</th>
-                <th>Last checked</th>
-                <th>Status</th>
-                <th className="col-actions">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {watches.map((watch) => (
-                <tr key={watch.name}>
-                  <td className="cell-name">{watch.name}</td>
-                  <td className="cell-url">
-                    <a href={watch.url} target="_blank" rel="noreferrer" title={watch.url}>
-                      {watch.url}
-                    </a>
-                    {watch.selector && <span className="selector" title="CSS selector">{watch.selector}</span>}
-                  </td>
-                  <td>{watch.interval}s</td>
-                  <td>{watch.ignore_patterns?.length || "—"}</td>
-                  <td title={watch.last_checked || ""}>{timeAgo(watch.last_checked)}</td>
-                  <td>{statusBadge(watch, results[watch.name])}</td>
-                  <td className="col-actions">
-                    <button type="button" className="btn btn-sm" onClick={() => checkOne(watch.name)}
-                            disabled={busy[watch.name]}>
-                      {busy[watch.name] ? <Spinner /> : "Check"}
-                    </button>
-                    <button type="button" className="btn btn-sm" onClick={() => setDetailName(watch.name)}>
-                      Details
-                    </button>
-                    <button type="button" className="btn btn-sm" onClick={() => setEditing(watch)}>
-                      Edit
-                    </button>
-                    <button type="button" className="btn btn-sm btn-danger" title="Delete"
-                            onClick={() => removeWatch(watch.name)}>
-                      ✕
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+<table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>URL</th>
+                    <th>Interval</th>
+                    <th>Ignores</th>
+                    <th>Checks</th>
+                    <th>Errors</th>
+                    <th>Last checked</th>
+                    <th>Status</th>
+                    <th className="col-actions">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {watches.map((watch) => (
+                    <tr key={watch.name} className={watch.paused ? "row-muted" : ""}>
+                      <td className="cell-name">{watch.name}</td>
+                      <td className="cell-url">
+                        <a href={watch.url} target="_blank" rel="noreferrer" title={watch.url}>
+                          {watch.url}
+                        </a>
+                        {watch.selector && <span className="selector" title="CSS selector">{watch.selector}</span>}
+                      </td>
+                      <td>{watch.interval}s</td>
+                      <td>{watch.ignore_patterns?.length || "—"}</td>
+                      <td>{watch.check_count ?? 0}</td>
+                      <td>{watch.error_count ?? 0}</td>
+                      <td title={watch.last_checked || ""}>{timeAgo(watch.last_checked)}</td>
+                      <td>{statusBadge(watch, results[watch.name])}</td>
+                      <td className="col-actions">
+                        <button type="button" className="btn btn-sm" onClick={() => checkOne(watch.name)}
+                                disabled={busy[watch.name] || watch.paused}>
+                          {busy[watch.name] ? <Spinner /> : "Check"}
+                        </button>
+                        <button type="button" className="btn btn-sm" onClick={() => togglePause(watch)}
+                                title={watch.paused ? "Resume" : "Pause"}>
+                          {watch.paused ? "▶" : "⏸"}
+                        </button>
+                        <button type="button" className="btn btn-sm" onClick={() => setDetailName(watch.name)}>
+                          Details
+                        </button>
+                        <button type="button" className="btn btn-sm" onClick={() => setEditing(watch)}>
+                          Edit
+                        </button>
+                        <button type="button" className="btn btn-sm btn-danger" title="Delete"
+                                onClick={() => removeWatch(watch.name)}>
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
         </div>
       )}
 

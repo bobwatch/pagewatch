@@ -61,6 +61,7 @@ class Storage:
         selector: str | None = None,
         interval: int = 3600,
         ignore_patterns: list[str] | None = None,
+        paused: bool = False,
     ) -> dict[str, Any]:
         watches = self.load_watches()
         watch = {
@@ -69,9 +70,13 @@ class Storage:
             "selector": selector,
             "interval": interval,
             "ignore_patterns": list(ignore_patterns or []),
+            "paused": paused,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_checked": None,
             "last_hash": None,
+            "check_count": 0,
+            "error_count": 0,
+            "last_status": None,
         }
         watches.append(watch)
         self.save_watches(watches)

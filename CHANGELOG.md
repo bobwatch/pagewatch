@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0 — 2026-07-27
+
+### Added
+- **Email alerts**: configure SMTP settings via `pagewatch alert email set`
+  (`--smtp-host`, `--smtp-port`, `--smtp-user`, `--smtp-pass`, `--to-addrs`,
+  `--no-tls`, `--from-addr`). Email is dispatched alongside webhooks for
+  change and error events. Also available in the web dashboard under
+  "Alert channels > Email alerts (SMTP)".
+- **Pause/Resume watches**: `pagewatch pause <name>` and `pagewatch resume
+  <name>` temporarily skip a watch during checks without losing its history.
+  Paused watches are shown with a muted row in the web dashboard and a
+  `paused` status badge in `pagewatch list`.
+- **Watch stats**: each watch now tracks `check_count`, `error_count`, and
+  `last_status` (ok/error). Displayed in `pagewatch list` and the web
+  dashboard table.
+- **API endpoints**: `POST /api/watches/{name}/pause`,
+  `POST /api/watches/{name}/resume`, `GET /api/alerts/email`,
+  `PUT /api/alerts/email`. Status endpoint now returns `paused_count` and
+  `email_configured`.
+- **CLI `update --pause/--resume`**: pause or resume a watch as part of an
+  update command.
+
 ## 0.4.0 — 2026-07-26
 
 ### Added

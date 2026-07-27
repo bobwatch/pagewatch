@@ -18,7 +18,10 @@ Supported payload formats: ``generic`` (full JSON event), ``slack``,
 """
 from __future__ import annotations
 
+import smtplib
+import ssl
 from datetime import datetime, timezone
+from email.mime.text import MIMEText
 from typing import Any
 
 import requests
@@ -67,12 +70,118 @@ def build_payload(fmt: str, event: dict[str, Any]) -> dict[str, Any]:
 
 
 class AlertManager:
-    """Manages webhook channels and dispatches alert events to them."""
+    """Manages webhook channels and email alerts, dispatching events to them."""
 
     def __init__(self, storage: Storage | None = None, session: Any = None, timeout: int = DEFAULT_TIMEOUT):
         self._store = storage or Storage()
         self._session = session or requests
         self._timeout = timeout
+
+    # -- email config -------------------------------------------------------
+
+    EMAIL_CONFIG_KEYS = ("smtp_host", "smtp_port", "smtp_user", "smtp_pass", "smtp_tls", "from_addr", "to_addrs")
+
+    def get_email_config(self) -> dict[str, Any]:
+        config = self._store.load_config()
+        return config.get("alerts", {}).get("email", {})
+
+    def set_email_config(
+        self,
+        smtp_host: str,
+        smtp_port: int = 587,
+        smtp_user: str | None = None,
+        smtp_pass: str | None = None,
+        smtp_tls: bool = True,
+        from_addr: str | None = None,
+        to_addrs: str | None = None,
+    ) -> dict[str, Any]:
+        if not smtp_host:
+            raise ValueError("SMTP host is required.")
+        email_cfg = {
+            "smtp_host": smtp_host,
+            "smtp_port": smtp_port,
+            "smtp_user": smtp_user or "",
+            "smtp_pass": smtp_pass or "",
+            "smtp_tls": smtp_tls,
+            "from_addr": from_addr or smtp_user or "",
+            "to_addrs": to_addrs or "",
+        }
+        config = self._store.load_config()
+        config.setdefault("alerts", {})["email"] = email_cfg
+        self._store.save_config(config)
+        return email_cfg
+
+    def send_email(self, subject: str, body: str) -> dict[str, Any]:
+        email_cfg = self.get_email_config()
+        report: dict[str, Any] = {"ok": False, "error": None}
+
+        if not email_cfg.get("smtp_host") or not email_cfg.get("to_addrs"):
+            report["error"] = "Email not configured. Use 'pagewatch alert email set' first."
+            return report
+
+        host = email_cfg["smtp_host"]
+        port = int(email_cfg.get("smtp_port", 587))
+        user = email_cfg.get("smtp_user") or ""
+        password = email_cfg.get("smtp_pass") or ""
+        use_tls = bool(email_cfg.get("smtp_tls", True))
+        from_addr = email_cfg.get("from_addr") or user
+        to_addrs = [a.strip() for a in email_cfg.get("to_addrs", "").split(",") if a.strip()]
+
+        if not to_addrs:
+            report["error"] = "No recipient addresses configured."
+            return report
+
+        msg = MIMEText(body, _charset="utf-8")
+        msg["Subject"] = subject
+        msg["From"] = from_addr
+        msg["To"] = ", ".join(to_addrs)
+
+        try:
+            if use_tls:
+                context = ssl.create_default_context()
+                with smtplib.SMTP(host, port, timeout=15) as server:
+                    server.starttls(context=context)
+                    if user and password:
+                        server.login(user, password)
+                    server.sendmail(from_addr, to_addrs, msg.as_string())
+            else:
+                with smtplib.SMTP(host, port, timeout=15) as server:
+                    if user and password:
+                        server.login(user, password)
+                    server.sendmail(from_addr, to_addrs, msg.as_string())
+            report["ok"] = True
+        except Exception as exc:
+            report["error"] = str(exc)
+
+        return report
+
+    def dispatch_email_event(self, event: dict[str, Any]) -> dict[str, Any]:
+        email_cfg = self.get_email_config()
+        report: dict[str, Any] = {"channel": "email", "event": event.get("event"), "ok": False, "error": None}
+        if not email_cfg.get("smtp_host") or not email_cfg.get("to_addrs"):
+            report["error"] = "Email not configured"
+            return report
+
+        kind = event.get("event", "change")
+        name = event.get("name", "?")
+        url = event.get("url", "?")
+
+        if kind == "change":
+            subject = f"[PageWatch] Change detected: {name}"
+            body = f"Change detected on '{name}'\n\nURL: {url}\nTime: {event.get('timestamp', '?')}\n"
+            preview = (event.get("diff_preview") or "").strip()
+            if preview:
+                body += f"\nDiff preview:\n{preview}\n"
+        elif kind == "error":
+            subject = f"[PageWatch] Check failed: {name}"
+            body = f"Check failed for '{name}'\n\nURL: {url}\nError: {event.get('error', '?')}\nTime: {event.get('timestamp', '?')}\n"
+        else:
+            subject = "[PageWatch] Test notification"
+            body = "This is a test notification from PageWatch. Your email alerts are working."
+
+        result = self.send_email(subject, body)
+        report.update(result)
+        return report
 
     # -- channel management -------------------------------------------------
 
@@ -133,6 +242,8 @@ class AlertManager:
         """Send alerts for check results (changes and errors). Returns delivery reports."""
         deliveries: list[dict[str, Any]] = []
         for result in results:
+            if result.get("paused"):
+                continue
             if result.get("changed"):
                 kind = "change"
             elif result.get("error"):
@@ -155,6 +266,8 @@ class AlertManager:
 
             for channel in self.channels_for(kind):
                 deliveries.append(self._post(channel, event))
+
+            deliveries.append(self.dispatch_email_event(event))
         return deliveries
 
     def send_test(self, name: str | None = None) -> list[dict[str, Any]]:
@@ -169,7 +282,10 @@ class AlertManager:
             "name": "pagewatch",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        return [self._post(c, event) for c in channels]
+        deliveries = [self._post(c, event) for c in channels]
+        if name is None:
+            deliveries.append(self.dispatch_email_event(event))
+        return deliveries
 
     def _post(self, channel: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         payload = build_payload(channel.get("format", "generic"), event)

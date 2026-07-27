@@ -22,6 +22,8 @@ export const api = {
   addWatch: (payload) => request("POST", "/api/watches", payload),
   updateWatch: (name, payload) => request("PATCH", `/api/watches/${enc(name)}`, payload),
   deleteWatch: (name) => request("DELETE", `/api/watches/${enc(name)}`),
+  pauseWatch: (name) => request("POST", `/api/watches/${enc(name)}/pause`),
+  resumeWatch: (name) => request("POST", `/api/watches/${enc(name)}/resume`),
   checkWatch: (name) => request("POST", `/api/watches/${enc(name)}/check`, {}),
   checkAll: () => request("POST", "/api/check", {}),
   history: (name, limit = 50) => request("GET", `/api/watches/${enc(name)}/history?limit=${limit}`),
@@ -32,4 +34,6 @@ export const api = {
   addAlert: (payload) => request("POST", "/api/alerts", payload),
   deleteAlert: (name) => request("DELETE", `/api/alerts/${enc(name)}`),
   testAlerts: (name) => request("POST", "/api/alerts/test", name ? { name } : {}),
+  emailConfig: () => request("GET", "/api/alerts/email"),
+  saveEmailConfig: (payload) => request("PUT", "/api/alerts/email", payload),
 };

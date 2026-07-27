@@ -27,6 +27,7 @@ Thumbs.db
 .pagewatch/
 
 # Hermes
+hermes/
 .hermes/
 
 # Temp

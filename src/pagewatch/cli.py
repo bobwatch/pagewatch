@@ -50,10 +50,11 @@ def print_banner():
 
 def _print_deliveries(deliveries):
     for d in deliveries:
+        channel = d.get("channel", "?")
         if d["ok"]:
-            console.print(f"[green]Alert sent[/] via '{d['channel']}' ({d['event']})")
+            console.print(f"[green]Alert sent[/] via '{channel}' ({d['event']})")
         else:
-            console.print(f"[red]Alert failed[/] via '{d['channel']}' ({d['event']}): {d['error']}")
+            console.print(f"[red]Alert failed[/] via '{channel}' ({d['event']}): {d['error']}")
 
 
 def _validate_patterns(patterns):
@@ -144,7 +145,8 @@ def add(url, name, selector, interval, ignore, check_now):
 @click.option("--add-ignore", multiple=True, help="Add an ignore regex (repeatable)")
 @click.option("--remove-ignore", multiple=True, help="Remove an ignore regex (repeatable)")
 @click.option("--clear-ignore", is_flag=True, help="Remove all ignore patterns")
-def update(name, url, selector, clear_selector, interval, add_ignore, remove_ignore, clear_ignore):
+@click.option("--pause/--resume", default=None, help="Pause or resume this watch")
+def update(name, url, selector, clear_selector, interval, add_ignore, remove_ignore, clear_ignore, pause):
     """Modify an existing watch (URL, selector, interval, ignore patterns)."""
     storage = get_storage()
     watch = storage.get_watch(name)
@@ -191,6 +193,12 @@ def update(name, url, selector, clear_selector, interval, add_ignore, remove_ign
         reset_baseline = True
 
     if not changes:
+        if pause is not None:
+            changes["paused"] = pause
+            storage.update_watch(name, **changes)
+            state = "paused" if pause else "resumed"
+            console.print(f"[green]{state.capitalize()} watch:[/] {name}")
+            return
         console.print("[yellow]Nothing to update. See 'pagewatch update --help' for options.[/]")
         return
 
@@ -220,12 +228,19 @@ def list_watches():
     table.add_column("Selector")
     table.add_column("Interval")
     table.add_column("Ignores")
+    table.add_column("Checks")
+    table.add_column("Errors")
     table.add_column("Last Checked")
     table.add_column("Status")
 
     for w in watches:
         last = w.get("last_checked") or "Never"
-        status = "[green]active[/]" if w.get("last_hash") else "[yellow]pending[/]"
+        if w.get("paused"):
+            status = "[yellow]paused[/]"
+        elif w.get("last_hash"):
+            status = "[green]active[/]"
+        else:
+            status = "[yellow]pending[/]"
         n_ignores = len(w.get("ignore_patterns") or [])
         table.add_row(
             w["name"],
@@ -233,6 +248,8 @@ def list_watches():
             w.get("selector") or "-",
             f"{w.get('interval', '-')}s",
             str(n_ignores) if n_ignores else "-",
+            str(w.get("check_count", 0)),
+            str(w.get("error_count", 0)),
             last[:19] if last != "Never" else last,
             status,
         )
@@ -575,7 +592,7 @@ def alert_remove(name):
 @alert.command("test")
 @click.option("--name", "-n", default=None, help="Test a single channel by name (default: all)")
 def alert_test(name):
-    """Send a test alert to configured channels."""
+    """Send a test alert to all configured channels (webhooks + email)."""
     manager = get_alert_manager()
     try:
         deliveries = manager.send_test(name)
@@ -583,11 +600,65 @@ def alert_test(name):
         console.print(f"[red]Error: {exc}[/]")
         sys.exit(1)
     if not deliveries:
-        console.print("[yellow]No alert channels configured. Use 'pagewatch alert add <url>' to add one.[/]")
+        console.print("[yellow]No alert channels configured. Use 'pagewatch alert add <url>' or 'pagewatch alert email set' first.[/]")
         return
     _print_deliveries(deliveries)
-    if any(not d["ok"] for d in deliveries):
+    webhook_ok = any(d.get("ok") and d.get("channel") != "email" for d in deliveries)
+    email_ok = any(d.get("channel") == "email" and d.get("ok") for d in deliveries)
+    if not webhook_ok and not email_ok:
         sys.exit(1)
+
+
+@alert.group()
+def email():
+    """Configure email alert settings (SMTP)."""
+
+
+@email.command("set")
+@click.option("--smtp-host", required=True, help="SMTP server hostname")
+@click.option("--smtp-port", type=int, default=587, show_default=True, help="SMTP server port")
+@click.option("--smtp-user", default=None, help="SMTP username (optional)")
+@click.option("--smtp-pass", default=None, help="SMTP password (optional)")
+@click.option("--no-tls", is_flag=True, help="Disable TLS (use plain SMTP)")
+@click.option("--from-addr", default=None, help="From address (defaults to SMTP user)")
+@click.option("--to-addrs", required=True, help="Comma-separated recipient addresses")
+def email_set(smtp_host, smtp_port, smtp_user, smtp_pass, no_tls, from_addr, to_addrs):
+    """Configure SMTP email alerts."""
+    try:
+        cfg = get_alert_manager().set_email_config(
+            smtp_host=smtp_host,
+            smtp_port=smtp_port,
+            smtp_user=smtp_user,
+            smtp_pass=smtp_pass,
+            smtp_tls=not no_tls,
+            from_addr=from_addr,
+            to_addrs=to_addrs,
+        )
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/]")
+        sys.exit(1)
+    console.print("[green]Email alert settings saved.[/]")
+    console.print(f"  SMTP:   {cfg['smtp_host']}:{cfg['smtp_port']}")
+    console.print(f"  TLS:    {cfg['smtp_tls']}")
+    console.print(f"  From:   {cfg.get('from_addr', '-')}")
+    console.print(f"  To:     {cfg.get('to_addrs', '-')}")
+
+
+@email.command("show")
+def email_show():
+    """Show current email alert configuration."""
+    cfg = get_alert_manager().get_email_config()
+    if not cfg.get("smtp_host"):
+        console.print("[yellow]Email alerts not configured. Use 'pagewatch alert email set' to configure.[/]")
+        return
+    console.print("[bold]Email Alert Configuration[/]")
+    console.print(f"  SMTP host: {cfg.get('smtp_host', '-')}")
+    console.print(f"  SMTP port: {cfg.get('smtp_port', '-')}")
+    console.print(f"  SMTP user: {cfg.get('smtp_user', '-')}")
+    console.print(f"  SMTP pass: {'***' if cfg.get('smtp_pass') else '(not set)'}")
+    console.print(f"  TLS:       {cfg.get('smtp_tls', True)}")
+    console.print(f"  From:      {cfg.get('from_addr', '-')}")
+    console.print(f"  To:        {cfg.get('to_addrs', '-')}")
 
 
 @cli.command()
@@ -736,6 +807,30 @@ def remove(name):
     else:
         console.print(f"[red]Watch '{name}' not found.[/]")
         sys.exit(1)
+
+
+@cli.command()
+@click.argument("name")
+def pause(name):
+    """Pause a watch — it will be skipped during checks."""
+    storage = get_storage()
+    if not storage.get_watch(name):
+        console.print(f"[red]Watch '{name}' not found.[/]")
+        sys.exit(1)
+    storage.update_watch(name, paused=True)
+    console.print(f"[yellow]Paused watch:[/] {name}")
+
+
+@cli.command()
+@click.argument("name")
+def resume(name):
+    """Resume a paused watch."""
+    storage = get_storage()
+    if not storage.get_watch(name):
+        console.print(f"[red]Watch '{name}' not found.[/]")
+        sys.exit(1)
+    storage.update_watch(name, paused=False)
+    console.print(f"[green]Resumed watch:[/] {name}")
 
 
 if __name__ == "__main__":

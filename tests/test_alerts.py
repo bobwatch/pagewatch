@@ -152,8 +152,15 @@ def test_dispatch_routes_by_event_kind():
         assert urls.count("https://hooks.example/change") == 1
         assert urls.count("https://hooks.example/error") == 1
         assert urls.count("https://hooks.example/all") == 2
-        assert len(reports) == 4
-        assert all(r["ok"] for r in reports)
+        # 4 webhooks + 2 email reports (email not configured, so 2 "not configured" reports)
+        assert len(reports) == 6
+        webhook_reports = [r for r in reports if r.get("channel") and r["channel"] != "email"]
+        assert len(webhook_reports) == 4
+        assert all(r["ok"] for r in webhook_reports)
+        email_reports = [r for r in reports if r.get("channel") == "email"]
+        assert len(email_reports) == 2
+        assert not email_reports[0]["ok"]
+        assert not email_reports[1]["ok"]
 
 
 def test_dispatch_truncates_diff_preview():
@@ -170,6 +177,7 @@ def test_dispatch_reports_http_failure():
         reports = am.dispatch([changed_result()])
         assert reports[0]["ok"] is False
         assert reports[0]["error"] == "HTTP 500"
+        assert not reports[1]["ok"]  # email not configured
 
 
 def test_dispatch_reports_network_exception():
@@ -178,6 +186,7 @@ def test_dispatch_reports_network_exception():
         reports = am.dispatch([changed_result()])
         assert reports[0]["ok"] is False
         assert "connection refused" in reports[0]["error"]
+        assert not reports[1]["ok"]  # email not configured
 
 
 def test_send_test_targets_named_or_all_channels():
@@ -186,7 +195,7 @@ def test_send_test_targets_named_or_all_channels():
         am.add_channel("https://hooks.example/b", name="b")
 
         reports = am.send_test()
-        assert len(reports) == 2
+        assert len(reports) == 3  # 2 webhooks + 1 email report (email not configured)
 
         session.posts.clear()
         reports = am.send_test("b")
@@ -198,3 +207,40 @@ def test_send_test_targets_named_or_all_channels():
             raise AssertionError("expected ValueError for unknown channel")
         except ValueError:
             pass
+
+
+def test_email_config_get_set():
+    with manager() as (am, _session, _store):
+        assert am.get_email_config() == {}
+
+        cfg = am.set_email_config(
+            smtp_host="smtp.gmail.com",
+            smtp_port=587,
+            smtp_user="user@gmail.com",
+            smtp_pass="app-password",
+            from_addr="pagewatch@gmail.com",
+            to_addrs="alerts@example.com",
+        )
+        assert cfg["smtp_host"] == "smtp.gmail.com"
+        assert cfg["smtp_port"] == 587
+        assert cfg["from_addr"] == "pagewatch@gmail.com"
+        assert cfg["to_addrs"] == "alerts@example.com"
+
+        reloaded = am.get_email_config()
+        assert reloaded["smtp_host"] == "smtp.gmail.com"
+
+
+def test_email_config_empty_host_raises():
+    with manager() as (am, _session, _store):
+        try:
+            am.set_email_config(smtp_host="")
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+
+
+def test_dispatch_email_event_not_configured():
+    with manager() as (am, _session, _store):
+        result = am.dispatch_email_event({"event": "change", "name": "t1", "url": "https://x.test"})
+        assert result["ok"] is False
+        assert "not configured" in result["error"].lower()

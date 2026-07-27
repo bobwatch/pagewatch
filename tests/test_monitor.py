@@ -135,3 +135,43 @@ def test_diff_uses_previous_distinct_snapshot():
         assert diff is not None
         assert "+version two" in diff
         assert "-version one" in diff
+
+
+def test_paused_watch_is_skipped():
+    with env(PAGE_V1) as (store, monitor):
+        store.add_watch("w", "https://x.test", paused=True)
+        result = monitor.check_one(store.get_watch("w"))
+        assert result.get("paused") is True
+        assert result["changed"] is False
+        assert result["error"] is None
+
+
+def test_check_updates_stats():
+    with env(PAGE_V1, PAGE_V2) as (store, monitor):
+        store.add_watch("w", "https://x.test")
+        monitor.check_one(store.get_watch("w"))
+        w = store.get_watch("w")
+        assert w["check_count"] == 1
+        assert w["error_count"] == 0
+        assert w["last_status"] == "ok"
+
+        monitor.check_one(store.get_watch("w"))
+        w = store.get_watch("w")
+        assert w["check_count"] == 2
+        assert w["error_count"] == 0
+        assert w["last_status"] == "ok"
+
+
+def test_error_increments_error_count():
+    with env(PAGE_V1, RuntimeError("boom")) as (store, monitor):
+        store.add_watch("w", "https://x.test")
+        monitor.check_one(store.get_watch("w"))
+        w = store.get_watch("w")
+        assert w["check_count"] == 1
+        assert w["error_count"] == 0
+
+        monitor.check_one(store.get_watch("w"))
+        w = store.get_watch("w")
+        assert w["check_count"] == 2
+        assert w["error_count"] == 1
+        assert w["last_status"] == "error"

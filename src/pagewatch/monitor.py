@@ -37,6 +37,18 @@ class Monitor:
     def check_one(self, watch: dict) -> dict:
         name = watch["name"]
         url = watch["url"]
+
+        if watch.get("paused"):
+            return {
+                "name": name,
+                "url": url,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "changed": False,
+                "error": None,
+                "diff": None,
+                "paused": True,
+            }
+
         selector = watch.get("selector")
 
         result = {
@@ -46,6 +58,7 @@ class Monitor:
             "changed": False,
             "error": None,
             "diff": None,
+            "paused": False,
         }
 
         try:
@@ -66,12 +79,30 @@ class Monitor:
 
             watch["last_hash"] = new_hash
             watch["last_checked"] = result["timestamp"]
-            self._store.update_watch(name, last_hash=new_hash, last_checked=result["timestamp"])
+            watch["check_count"] = (watch.get("check_count") or 0) + 1
+            watch["last_status"] = "ok"
+            self._store.update_watch(
+                name,
+                last_hash=new_hash,
+                last_checked=result["timestamp"],
+                check_count=watch["check_count"],
+                last_status="ok",
+            )
 
             self._store.save_snapshot(name, new_hash, text, html)
 
         except Exception as exc:
             result["error"] = str(exc)
+            watch["error_count"] = (watch.get("error_count") or 0) + 1
+            watch["check_count"] = (watch.get("check_count") or 0) + 1
+            watch["last_status"] = "error"
+            self._store.update_watch(
+                name,
+                last_checked=result["timestamp"],
+                error_count=watch["error_count"],
+                check_count=watch["check_count"],
+                last_status="error",
+            )
 
         return result
 

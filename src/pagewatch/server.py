@@ -83,6 +83,8 @@ ROUTES = [
     ("PATCH", re.compile(r"^/api/watches/([^/]+)$"), "h_update_watch"),
     ("DELETE", re.compile(r"^/api/watches/([^/]+)$"), "h_delete_watch"),
     ("POST", re.compile(r"^/api/watches/([^/]+)/check$"), "h_check_one"),
+    ("POST", re.compile(r"^/api/watches/([^/]+)/pause$"), "h_pause_watch"),
+    ("POST", re.compile(r"^/api/watches/([^/]+)/resume$"), "h_resume_watch"),
     ("GET", re.compile(r"^/api/watches/([^/]+)/history$"), "h_history"),
     ("GET", re.compile(r"^/api/watches/([^/]+)/diff$"), "h_diff"),
     ("POST", re.compile(r"^/api/check$"), "h_check_all"),
@@ -92,6 +94,8 @@ ROUTES = [
     ("POST", re.compile(r"^/api/alerts$"), "h_add_alert"),
     ("DELETE", re.compile(r"^/api/alerts/([^/]+)$"), "h_delete_alert"),
     ("POST", re.compile(r"^/api/alerts/test$"), "h_test_alerts"),
+    ("GET", re.compile(r"^/api/alerts/email$"), "h_get_email_config"),
+    ("PUT", re.compile(r"^/api/alerts/email$"), "h_set_email_config"),
 ]
 
 
@@ -259,10 +263,14 @@ class RequestHandler(BaseHTTPRequestHandler):
         storage = self.server.storage
         watches = storage.load_watches()
         channels = storage.load_config().get("alerts", {}).get("webhooks", [])
+        paused_count = sum(1 for w in watches if w.get("paused"))
+        email_cfg = storage.load_config().get("alerts", {}).get("email", {})
         self._send_json(200, {
             "version": __version__,
             "watch_count": len(watches),
+            "paused_count": paused_count,
             "alert_channel_count": len(channels),
+            "email_configured": bool(email_cfg.get("smtp_host")),
             "data_dir": str(storage._root),
             "ui_built": (self.server.webui_dir / "index.html").is_file(),
             "alert_formats": list(SUPPORTED_FORMATS),
@@ -334,6 +342,18 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not self.server.storage.remove_watch(name):
                 raise ApiError(404, f"Watch '{name}' not found.")
         self._send_json(200, {"removed": name})
+
+    def h_pause_watch(self, name, query=None):
+        with self.server.write_lock:
+            watch = self._get_watch_or_404(name)
+            self.server.storage.update_watch(name, paused=True)
+        self._send_json(200, {"name": name, "paused": True})
+
+    def h_resume_watch(self, name, query=None):
+        with self.server.write_lock:
+            watch = self._get_watch_or_404(name)
+            self.server.storage.update_watch(name, paused=False)
+        self._send_json(200, {"name": name, "paused": False})
 
     def _run_checks(self, watches: list[dict], with_alerts: bool) -> dict[str, Any]:
         monitor = self.server.monitor_factory()
@@ -448,6 +468,32 @@ class RequestHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             raise ApiError(404, str(exc))
         self._send_json(200, {"deliveries": deliveries})
+
+    def h_get_email_config(self, query=None):
+        cfg = self.server.alert_manager_factory().get_email_config()
+        safe = {k: v for k, v in cfg.items() if k != "smtp_pass"}
+        safe["smtp_pass_set"] = bool(cfg.get("smtp_pass"))
+        self._send_json(200, safe)
+
+    def h_set_email_config(self, query=None):
+        body = self._read_json()
+        manager = self.server.alert_manager_factory()
+        with self.server.write_lock:
+            try:
+                cfg = manager.set_email_config(
+                    smtp_host=str(body.get("smtp_host", "")),
+                    smtp_port=int(body.get("smtp_port", 587)),
+                    smtp_user=str(body.get("smtp_user") or ""),
+                    smtp_pass=str(body.get("smtp_pass") or ""),
+                    smtp_tls=bool(body.get("smtp_tls", True)),
+                    from_addr=str(body.get("from_addr") or ""),
+                    to_addrs=str(body.get("to_addrs") or ""),
+                )
+            except ValueError as exc:
+                raise ApiError(400, str(exc))
+        safe = {k: v for k, v in cfg.items() if k != "smtp_pass"}
+        safe["smtp_pass_set"] = bool(cfg.get("smtp_pass"))
+        self._send_json(200, safe)
 
 
 def create_server(host: str = "127.0.0.1", port: int = 8787, **kwargs) -> PagewatchServer:
