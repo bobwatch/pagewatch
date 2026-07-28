@@ -14,6 +14,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 MAX_HISTORY = 1000
+MAX_ALERT_HISTORY = 1000
 
 
 def _atomic_write(path: Path, data: str) -> None:
@@ -48,6 +49,7 @@ class Storage:
         self._watches_file = self._root / "watches.json"
         self._snapshots_dir = self._root / "snapshots"
         self._snapshots_dir.mkdir(exist_ok=True)
+        self._alerts_history_file = self._root / "alerts_history.json"
 
     def load_config(self) -> dict[str, Any]:
         config = copy.deepcopy(DEFAULT_CONFIG)
@@ -80,6 +82,8 @@ class Storage:
         interval: int = 3600,
         ignore_patterns: list[str] | None = None,
         paused: bool = False,
+        tags: list[str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         name = _validate_name(name)
         watches = self.load_watches()
@@ -89,6 +93,8 @@ class Storage:
             "selector": selector,
             "interval": interval,
             "ignore_patterns": list(ignore_patterns or []),
+            "tags": list(tags or []),
+            "headers": dict(headers or {}),
             "paused": paused,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "last_checked": None,
@@ -159,3 +165,73 @@ class Storage:
         }
         _atomic_write(snap_file, json.dumps(existing, indent=2, ensure_ascii=False))
         return entry
+
+    # -- alerts history -------------------------------------------------------
+
+    def load_alerts_history(self) -> list[dict[str, Any]]:
+        data = _safe_json_load(self._alerts_history_file)
+        return data if isinstance(data, list) else []
+
+    def save_alerts_history(self, history: list[dict[str, Any]]) -> None:
+        if len(history) > MAX_ALERT_HISTORY:
+            history[:len(history) - MAX_ALERT_HISTORY] = []
+        _atomic_write(self._alerts_history_file, json.dumps(history, indent=2, ensure_ascii=False))
+
+    def append_alert_event(self, entry: dict[str, Any]) -> None:
+        history = self.load_alerts_history()
+        history.append(entry)
+        self.save_alerts_history(history)
+
+    # -- stats ----------------------------------------------------------------
+
+    def get_stats(self) -> dict[str, Any]:
+        watches = self.load_watches()
+        total = len(watches)
+        active = sum(1 for w in watches if w.get("last_hash") and not w.get("paused"))
+        paused = sum(1 for w in watches if w.get("paused"))
+        errored = sum(1 for w in watches if w.get("last_status") == "error")
+        total_checks = sum(w.get("check_count", 0) for w in watches)
+        total_errors = sum(w.get("error_count", 0) for w in watches)
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        week_ago = datetime.now(timezone.utc).timestamp() - 7 * 86400
+        month_ago = datetime.now(timezone.utc).timestamp() - 30 * 86400
+        today_changes = 0
+        week_changes = 0
+        month_changes = 0
+
+        for w in watches:
+            snap = self.load_snapshot(w["name"])
+            if not snap:
+                continue
+            for entry in snap.get("history", []):
+                ts = entry.get("timestamp", "")
+                try:
+                    t = datetime.fromisoformat(ts).timestamp()
+                except (ValueError, TypeError):
+                    continue
+                if ts.startswith(today):
+                    today_changes += 1
+                if t >= week_ago:
+                    week_changes += 1
+                if t >= month_ago:
+                    month_changes += 1
+
+        top_changed = sorted(
+            [(w["name"], len((self.load_snapshot(w["name"]) or {}).get("history", []))) for w in watches],
+            key=lambda x: x[1], reverse=True
+        )[:5]
+
+        return {
+            "total_watches": total,
+            "active_watches": active,
+            "paused_watches": paused,
+            "errored_watches": errored,
+            "total_checks": total_checks,
+            "total_errors": total_errors,
+            "error_rate": round(total_errors / max(total_checks, 1) * 100, 1),
+            "changes_today": today_changes,
+            "changes_week": week_changes,
+            "changes_month": month_changes,
+            "top_changed": [{"name": n, "snapshots": c} for n, c in top_changed],
+        }

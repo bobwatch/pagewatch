@@ -44,6 +44,7 @@ class Monitor:
             }
 
         selector = watch.get("selector")
+        extra_headers = watch.get("headers") or {}
 
         result = {
             "name": name,
@@ -56,7 +57,7 @@ class Monitor:
         }
 
         try:
-            html, _ = self._fetch(url)
+            html, _ = self._fetch(url, extra_headers=extra_headers)
             text = extract_text(html, selector)
             text = apply_ignore_patterns(text, watch.get("ignore_patterns"))
             new_hash = content_hash(text)

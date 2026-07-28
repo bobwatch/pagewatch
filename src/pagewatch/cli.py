@@ -216,10 +216,27 @@ def update(name, url, selector, clear_selector, interval, add_ignore, remove_ign
 
 
 @cli.command("list")
-def list_watches():
+@click.option("--search", default=None, help="Filter by name or URL keyword")
+@click.option("--tag", default=None, help="Filter by tag")
+@click.option("--status", type=click.Choice(["active", "paused", "error", "pending"]), default=None, help="Filter by status")
+def list_watches(search, tag, status):
     watches = get_storage().load_watches()
+    if search:
+        search = search.lower()
+        watches = [w for w in watches if search in w["name"].lower() or search in w["url"].lower()]
+    if tag:
+        watches = [w for w in watches if tag in (w.get("tags") or [])]
+    if status:
+        if status == "paused":
+            watches = [w for w in watches if w.get("paused")]
+        elif status == "active":
+            watches = [w for w in watches if w.get("last_hash") and not w.get("paused")]
+        elif status == "error":
+            watches = [w for w in watches if w.get("last_status") == "error"]
+        elif status == "pending":
+            watches = [w for w in watches if not w.get("last_hash") and not w.get("paused")]
     if not watches:
-        console.print("[yellow]No watches configured. Use 'pagewatch add <url>' to add one.[/]")
+        console.print("[yellow]No watches match the given filters.[/]")
         return
 
     table = Table(title="Monitored Pages")
@@ -835,6 +852,67 @@ def remove(name):
     else:
         console.print(f"[red]Watch '{name}' not found.[/]")
         sys.exit(1)
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--new-name", default=None, help="Name for the cloned watch (default: {name}-copy)")
+def clone(name, new_name):
+    """Clone an existing watch with all its configuration."""
+    storage = get_storage()
+    watch = storage.get_watch(name)
+    if not watch:
+        console.print(f"[red]Watch '{name}' not found.[/]")
+        sys.exit(1)
+    new_name = new_name or f"{name}-copy"
+    if storage.get_watch(new_name):
+        console.print(f"[red]A watch named '{new_name}' already exists.[/]")
+        sys.exit(1)
+    cloned = storage.add_watch(
+        name=new_name, url=watch["url"], selector=watch.get("selector"),
+        interval=watch.get("interval", 3600),
+        ignore_patterns=list(watch.get("ignore_patterns") or []),
+        tags=list(watch.get("tags") or []),
+        headers=dict(watch.get("headers") or {}),
+    )
+    console.print(f"[green]Cloned watch:[/] {name} → {new_name}")
+    console.print(f"  URL:      {cloned['url']}")
+
+
+@cli.command()
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--delimiter", default=",", help="CSV delimiter (default: comma)")
+def import_csv(file, delimiter):
+    """Import watches from a CSV file (name, url, selector, interval, tags)."""
+    storage = get_storage()
+    imported = 0
+    skipped = 0
+    try:
+        with open(file, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter=delimiter)
+            for row in reader:
+                name = (row.get("name") or "").strip()
+                url = (row.get("url") or "").strip()
+                if not name or not url:
+                    skipped += 1
+                    continue
+                if storage.get_watch(name):
+                    skipped += 1
+                    continue
+                url = normalize_url(url)
+                if not is_valid_url(url):
+                    skipped += 1
+                    continue
+                interval = int(row.get("interval", 3600))
+                tags = [t.strip() for t in row.get("tags", "").split(";") if t.strip()]
+                storage.add_watch(name=name, url=url, interval=interval, tags=tags)
+                imported += 1
+    except (OSError, ValueError, csv.Error) as exc:
+        console.print(f"[red]CSV import failed: {exc}[/]")
+        sys.exit(1)
+    console.print(f"[green]Imported {imported} watch(es) from CSV.[/]")
+    if skipped:
+        console.print(f"[yellow]Skipped {skipped} invalid or duplicate entries.[/]")
 
 
 @cli.command()

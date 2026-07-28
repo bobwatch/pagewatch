@@ -80,6 +80,7 @@ a{color:#22d3ee}p{line-height:1.6}
 
 ROUTES = [
     ("GET", re.compile(r"^/api/status$"), "h_status"),
+    ("GET", re.compile(r"^/api/stats$"), "h_stats"),
     ("GET", re.compile(r"^/api/watches$"), "h_list_watches"),
     ("POST", re.compile(r"^/api/watches$"), "h_add_watch"),
     ("PATCH", re.compile(r"^/api/watches/([^/]+)$"), "h_update_watch"),
@@ -87,10 +88,15 @@ ROUTES = [
     ("POST", re.compile(r"^/api/watches/([^/]+)/check$"), "h_check_one"),
     ("POST", re.compile(r"^/api/watches/([^/]+)/pause$"), "h_pause_watch"),
     ("POST", re.compile(r"^/api/watches/([^/]+)/resume$"), "h_resume_watch"),
+    ("POST", re.compile(r"^/api/watches/([^/]+)/clone$"), "h_clone_watch"),
     ("GET", re.compile(r"^/api/watches/([^/]+)/history$"), "h_history"),
     ("DELETE", re.compile(r"^/api/watches/([^/]+)/history$"), "h_delete_history"),
     ("GET", re.compile(r"^/api/watches/([^/]+)/diff$"), "h_diff"),
     ("POST", re.compile(r"^/api/check$"), "h_check_all"),
+    ("POST", re.compile(r"^/api/batch/pause$"), "h_batch_pause"),
+    ("POST", re.compile(r"^/api/batch/resume$"), "h_batch_resume"),
+    ("POST", re.compile(r"^/api/batch/delete$"), "h_batch_delete"),
+    ("POST", re.compile(r"^/api/batch/check$"), "h_batch_check"),
     ("GET", re.compile(r"^/api/config$"), "h_get_config"),
     ("PUT", re.compile(r"^/api/config$"), "h_put_config"),
     ("GET", re.compile(r"^/api/alerts$"), "h_list_alerts"),
@@ -100,6 +106,7 @@ ROUTES = [
     ("POST", re.compile(r"^/api/alerts/test$"), "h_test_alerts"),
     ("GET", re.compile(r"^/api/alerts/email$"), "h_get_email_config"),
     ("PUT", re.compile(r"^/api/alerts/email$"), "h_set_email_config"),
+    ("GET", re.compile(r"^/api/alerts/history$"), "h_alerts_history"),
     ("GET", re.compile(r"^/api/export$"), "h_export"),
     ("POST", re.compile(r"^/api/import$"), "h_import"),
     ("POST", re.compile(r"^/api/daemon/start$"), "h_daemon_start"),
@@ -329,6 +336,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         channels = storage.load_config().get("alerts", {}).get("webhooks", [])
         paused_count = sum(1 for w in watches if w.get("paused"))
         email_cfg = storage.load_config().get("alerts", {}).get("email", {})
+        all_tags = sorted({t for w in watches for t in (w.get("tags") or [])})
         self._send_json(200, {
             "version": __version__,
             "watch_count": len(watches),
@@ -340,10 +348,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             "alert_formats": list(SUPPORTED_FORMATS),
             "alert_events": list(SUPPORTED_EVENTS),
             "daemon_running": self.server.daemon_running,
+            "tags": all_tags,
         })
 
+    def h_stats(self, query=None):
+        self._send_json(200, self.server.storage.get_stats())
+
     def h_list_watches(self, query=None):
-        self._send_json(200, self.server.storage.load_watches())
+        watches = self.server.storage.load_watches()
+        search = ((query or {}).get("search") or [None])[0]
+        tag = ((query or {}).get("tag") or [None])[0]
+        if search:
+            search = search.lower()
+            watches = [w for w in watches if search in w["name"].lower() or search in w["url"].lower()]
+        if tag:
+            watches = [w for w in watches if tag in (w.get("tags") or [])]
+        self._send_json(200, watches)
 
     def h_add_watch(self, query=None):
         body = self._read_json()
@@ -356,13 +376,15 @@ class RequestHandler(BaseHTTPRequestHandler):
         interval = self._validate_interval(body.get("interval", 3600))
         patterns = self._validate_patterns(body.get("ignore_patterns", []))
         selector = body.get("selector") or None
+        tags = body.get("tags") or []
+        headers = body.get("headers") or {}
 
         with self.server.write_lock:
             if self.server.storage.get_watch(name):
                 raise ApiError(409, f"A watch named '{name}' already exists.")
             watch = self.server.storage.add_watch(
                 name=name, url=url, selector=selector, interval=interval,
-                ignore_patterns=patterns,
+                ignore_patterns=patterns, tags=tags, headers=headers,
             )
 
         payload = {"watch": watch}
@@ -393,10 +415,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             if "ignore_patterns" in body:
                 changes["ignore_patterns"] = self._validate_patterns(body["ignore_patterns"])
                 reset_baseline = True
+            if "tags" in body:
+                changes["tags"] = list(body["tags"])
+            if "headers" in body:
+                changes["headers"] = dict(body["headers"])
+                reset_baseline = True
 
             if not changes:
                 raise ApiError(400, "No editable fields in request "
-                                    "(url, selector, interval, ignore_patterns).")
+                                    "(url, selector, interval, ignore_patterns, tags, headers).")
             if reset_baseline:
                 changes["last_hash"] = None
             updated = self.server.storage.update_watch(watch["name"], **changes)
@@ -419,6 +446,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._get_watch_or_404(name)
             self.server.storage.update_watch(name, paused=False)
         self._send_json(200, {"name": name, "paused": False})
+
+    def h_clone_watch(self, name, query=None):
+        body = self._read_json()
+        new_name = str(body.get("name") or "").strip() or f"{name}-copy"
+        with self.server.write_lock:
+            watch = self._get_watch_or_404(name)
+            if self.server.storage.get_watch(new_name):
+                raise ApiError(409, f"A watch named '{new_name}' already exists.")
+            cloned = self.server.storage.add_watch(
+                name=new_name, url=watch["url"], selector=watch.get("selector"),
+                interval=watch.get("interval", 3600),
+                ignore_patterns=list(watch.get("ignore_patterns") or []),
+                tags=list(watch.get("tags") or []),
+                headers=dict(watch.get("headers") or {}),
+            )
+        self._send_json(201, cloned)
 
     def _run_checks(self, watches: list[dict], with_alerts: bool) -> dict[str, Any]:
         monitor = self.server.monitor_factory()
@@ -658,6 +701,50 @@ class RequestHandler(BaseHTTPRequestHandler):
             if snap_file.is_file():
                 snap_file.unlink()
         self._send_json(200, {"removed": name})
+
+    def _batch_op(self, op: str, query=None):
+        body = self._read_json()
+        names = body.get("names", [])
+        if not isinstance(names, list) or not names:
+            raise ApiError(400, "Provide a 'names' list.")
+        results = []
+        with self.server.write_lock:
+            for n in names:
+                w = self.server.storage.get_watch(n)
+                if not w:
+                    results.append({"name": n, "ok": False, "error": "not found"})
+                    continue
+                if op == "pause":
+                    self.server.storage.update_watch(n, paused=True)
+                    results.append({"name": n, "ok": True})
+                elif op == "resume":
+                    self.server.storage.update_watch(n, paused=False)
+                    results.append({"name": n, "ok": True})
+                elif op == "delete":
+                    self.server.storage.remove_watch(n)
+                    results.append({"name": n, "ok": True})
+                elif op == "check":
+                    monitor = self.server.monitor_factory()
+                    r = monitor.check_one(w)
+                    results.append({"name": n, "ok": True, "result": r})
+        self._send_json(200, {"results": results})
+
+    def h_batch_pause(self, query=None):
+        self._batch_op("pause", query)
+
+    def h_batch_resume(self, query=None):
+        self._batch_op("resume", query)
+
+    def h_batch_delete(self, query=None):
+        self._batch_op("delete", query)
+
+    def h_batch_check(self, query=None):
+        self._batch_op("check", query)
+
+    def h_alerts_history(self, query=None):
+        history = self.server.storage.load_alerts_history()
+        limit = 100
+        self._send_json(200, {"total": len(history), "history": history[-limit:]})
 
 
 def create_server(host: str = "127.0.0.1", port: int = 8787, **kwargs) -> PagewatchServer:

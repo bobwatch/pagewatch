@@ -4,8 +4,12 @@ import AlertsPanel from "./components/AlertsPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import WatchList from "./components/WatchList";
 import DataPanel from "./components/DataPanel";
+import StatsPanel from "./components/StatsPanel";
+import ActivityLog from "./components/ActivityLog";
+import NotificationsPanel from "./components/NotificationsPanel";
+import TagsPanel from "./components/TagsPanel";
 
-const TABS = ["Watches", "Alerts", "Data", "Settings"];
+const TABS = ["Watches", "Stats", "Activity", "Alerts", "Notifications", "Tags", "Data", "Settings"];
 
 export default function App() {
   const [tab, setTab] = useState("Watches");
@@ -58,7 +62,11 @@ export default function App() {
 
       <main className="content">
         {tab === "Watches" && <WatchList toast={toast} onDataChanged={refreshStatus} />}
+        {tab === "Stats" && <StatsPanel toast={toast} />}
+        {tab === "Activity" && <ActivityLog toast={toast} />}
         {tab === "Alerts" && <AlertsPanel toast={toast} status={status} onDataChanged={refreshStatus} />}
+        {tab === "Notifications" && <NotificationsPanel toast={toast} />}
+        {tab === "Tags" && <TagsPanel toast={toast} status={status} onDataChanged={refreshStatus} />}
         {tab === "Data" && <DataPanel toast={toast} status={status} onDataChanged={refreshStatus} />}
         {tab === "Settings" && <SettingsPanel toast={toast} status={status} />}
       </main>

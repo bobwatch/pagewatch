@@ -18,17 +18,29 @@ const enc = encodeURIComponent;
 
 export const api = {
   status: () => request("GET", "/api/status"),
-  watches: () => request("GET", "/api/watches"),
+  stats: () => request("GET", "/api/stats"),
+  watches: (search, tag) => {
+    const params = [];
+    if (search) params.push(`search=${enc(search)}`);
+    if (tag) params.push(`tag=${enc(tag)}`);
+    const qs = params.length ? "?" + params.join("&") : "";
+    return request("GET", "/api/watches" + qs);
+  },
   addWatch: (payload) => request("POST", "/api/watches", payload),
   updateWatch: (name, payload) => request("PATCH", `/api/watches/${enc(name)}`, payload),
   deleteWatch: (name) => request("DELETE", `/api/watches/${enc(name)}`),
   pauseWatch: (name) => request("POST", `/api/watches/${enc(name)}/pause`),
   resumeWatch: (name) => request("POST", `/api/watches/${enc(name)}/resume`),
+  cloneWatch: (name, payload) => request("POST", `/api/watches/${enc(name)}/clone`, payload),
   checkWatch: (name, alerts = true) => request("POST", `/api/watches/${enc(name)}/check`, { alerts }),
   checkAll: (alerts = true) => request("POST", "/api/check", { alerts }),
   history: (name, limit = 50) => request("GET", `/api/watches/${enc(name)}/history?limit=${limit}`),
   deleteHistory: (name) => request("DELETE", `/api/watches/${enc(name)}/history`),
   diff: (name) => request("GET", `/api/watches/${enc(name)}/diff`),
+  batchPause: (names) => request("POST", "/api/batch/pause", { names }),
+  batchResume: (names) => request("POST", "/api/batch/resume", { names }),
+  batchDelete: (names) => request("POST", "/api/batch/delete", { names }),
+  batchCheck: (names) => request("POST", "/api/batch/check", { names }),
   config: () => request("GET", "/api/config"),
   saveConfig: (payload) => request("PUT", "/api/config", payload),
   alerts: () => request("GET", "/api/alerts"),
@@ -36,6 +48,7 @@ export const api = {
   updateAlert: (name, payload) => request("PATCH", `/api/alerts/${enc(name)}`, payload),
   deleteAlert: (name) => request("DELETE", `/api/alerts/${enc(name)}`),
   testAlerts: (name) => request("POST", "/api/alerts/test", name ? { name } : {}),
+  alertsHistory: () => request("GET", "/api/alerts/history"),
   emailConfig: () => request("GET", "/api/alerts/email"),
   saveEmailConfig: (payload) => request("PUT", "/api/alerts/email", payload),
   exportData: () => request("GET", "/api/export"),

@@ -40,6 +40,7 @@ def fetch_page(
     retries: int = 2,
     backoff: float = 1.5,
     getter=None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     headers = {
         "User-Agent": (
@@ -50,6 +51,8 @@ def fetch_page(
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
     }
+    if extra_headers:
+        headers.update(extra_headers)
     proxies = {"http": proxy, "https": proxy} if proxy else None
     get = getter or requests.get
     attempts = max(0, int(retries)) + 1

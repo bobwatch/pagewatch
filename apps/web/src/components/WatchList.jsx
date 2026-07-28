@@ -21,15 +21,17 @@ export default function WatchList({ toast, onDataChanged }) {
   const [editing, setEditing] = useState(null);
   const [detailName, setDetailName] = useState(null);
   const [noAlerts, setNoAlerts] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState(new Set());
 
   const load = useCallback(async () => {
     try {
-      setWatches(await api.watches());
+      setWatches(await api.watches(search || null));
     } catch (err) {
       toast(`Failed to load watches: ${err.message}`, "err");
       setWatches([]);
     }
-  }, [toast]);
+  }, [toast, search]);
 
   useEffect(() => {
     load();
@@ -117,11 +119,75 @@ export default function WatchList({ toast, onDataChanged }) {
     onDataChanged();
   }
 
+  function toggleSelect(name) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (!watches) return;
+    if (selected.size === watches.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(watches.map((w) => w.name)));
+    }
+  }
+
+  async function batchOp(op) {
+    if (selected.size === 0) return;
+    const names = Array.from(selected);
+    setBusyFlag("__batch__", true);
+    try {
+      let fn;
+      if (op === "pause") fn = api.batchPause(names);
+      else if (op === "resume") fn = api.batchResume(names);
+      else if (op === "delete") { if (!window.confirm(`Delete ${names.length} watch(es)?`)) return; fn = api.batchDelete(names); }
+      else if (op === "check") fn = api.batchCheck(names);
+      await fn;
+      toast(`Batch ${op} completed for ${names.length} watch(es)`, "ok");
+      setSelected(new Set());
+      await load();
+      onDataChanged();
+    } catch (err) {
+      toast(err.message, "err");
+    } finally {
+      setBusyFlag("__batch__", false);
+    }
+  }
+
+  async function cloneWatch(name) {
+    const newName = prompt(`Clone "${name}" as:`, `${name}-copy`);
+    if (!newName) return;
+    try {
+      await api.cloneWatch(name, { name: newName });
+      toast(`Cloned ${name} → ${newName}`, "ok");
+      await load();
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  }
+
   return (
     <section>
       <div className="toolbar">
         <h2>Watches</h2>
         <div className="toolbar-actions">
+          <input type="search" placeholder="Search name or URL..." value={search}
+                 onChange={(e) => setSearch(e.target.value)}
+                 style={{ padding: "4px 8px", borderRadius: "4px", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--fg)", fontSize: "13px", width: "200px" }} />
+          {selected.size > 0 && (
+            <>
+              <span className="muted" style={{ fontSize: "12px" }}>{selected.size} selected</span>
+              <button type="button" className="btn btn-sm" onClick={() => batchOp("pause")} disabled={busy.__batch__}>Pause</button>
+              <button type="button" className="btn btn-sm" onClick={() => batchOp("resume")} disabled={busy.__batch__}>Resume</button>
+              <button type="button" className="btn btn-sm" onClick={() => batchOp("check")} disabled={busy.__batch__}>Check</button>
+              <button type="button" className="btn btn-sm btn-danger" onClick={() => batchOp("delete")} disabled={busy.__batch__}>Delete</button>
+            </>
+          )}
           <label className="check-label" style={{ fontSize: "12px", marginRight: "8px" }}>
             <input type="checkbox" checked={noAlerts} onChange={(e) => setNoAlerts(e.target.checked)} />
             Suppress alerts
@@ -149,10 +215,12 @@ export default function WatchList({ toast, onDataChanged }) {
 <table>
                 <thead>
                   <tr>
+                    <th><input type="checkbox" onChange={toggleSelectAll}
+                               checked={watches && watches.length > 0 && selected.size === watches.length} /></th>
                     <th>Name</th>
                     <th>URL</th>
                     <th>Interval</th>
-                    <th>Ignores</th>
+                    <th>Tags</th>
                     <th>Checks</th>
                     <th>Errors</th>
                     <th>Last checked</th>
@@ -163,6 +231,8 @@ export default function WatchList({ toast, onDataChanged }) {
                 <tbody>
                   {watches.map((watch) => (
                     <tr key={watch.name} className={watch.paused ? "row-muted" : ""}>
+                      <td><input type="checkbox" checked={selected.has(watch.name)}
+                                 onChange={() => toggleSelect(watch.name)} /></td>
                       <td className="cell-name">{watch.name}</td>
                       <td className="cell-url">
                         <a href={watch.url} target="_blank" rel="noreferrer" title={watch.url}>
@@ -171,7 +241,9 @@ export default function WatchList({ toast, onDataChanged }) {
                         {watch.selector && <span className="selector" title="CSS selector">{watch.selector}</span>}
                       </td>
                       <td>{watch.interval}s</td>
-                      <td>{watch.ignore_patterns?.length || "—"}</td>
+                      <td>{(watch.tags || []).map((t) => (
+                        <span key={t} className="tag-badge-sm">{t}</span>
+                      ))}</td>
                       <td>{watch.check_count ?? 0}</td>
                       <td>{watch.error_count ?? 0}</td>
                       <td title={watch.last_checked || ""}>{timeAgo(watch.last_checked)}</td>
@@ -186,6 +258,9 @@ export default function WatchList({ toast, onDataChanged }) {
                                 aria-label={watch.paused ? "Resume watch" : "Pause watch"}
                                 disabled={busy[`pause-${watch.name}`]}>
                           {busy[`pause-${watch.name}`] ? <Spinner /> : watch.paused ? "▶" : "⏸"}
+                        </button>
+                        <button type="button" className="btn btn-sm" onClick={() => cloneWatch(watch.name)} title="Clone">
+                          ◎
                         </button>
                         <button type="button" className="btn btn-sm" onClick={() => setDetailName(watch.name)}>
                           Details

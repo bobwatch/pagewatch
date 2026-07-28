@@ -277,9 +277,27 @@ class AlertManager:
                 event["error"] = result.get("error")
 
             for channel in self.channels_for(kind):
-                deliveries.append(self._post(channel, event))
+                d = self._post(channel, event)
+                deliveries.append(d)
+                self._store.append_alert_event({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "watch": result.get("name"),
+                    "event": kind,
+                    "channel": channel.get("name"),
+                    "ok": d["ok"],
+                    "error": d.get("error"),
+                })
 
-            deliveries.append(self.dispatch_email_event(event))
+            email_d = self.dispatch_email_event(event)
+            deliveries.append(email_d)
+            self._store.append_alert_event({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "watch": result.get("name"),
+                "event": kind,
+                "channel": "email",
+                "ok": email_d["ok"],
+                "error": email_d.get("error"),
+            })
         return deliveries
 
     def send_test(self, name: str | None = None) -> list[dict[str, Any]]:

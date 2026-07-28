@@ -25,6 +25,10 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
   const [selector, setSelector] = useState(watch?.selector || "");
   const [interval, setInterval] = useState(watch?.interval ?? 3600);
   const [patternsText, setPatternsText] = useState((watch?.ignore_patterns || []).join("\n"));
+  const [tagsText, setTagsText] = useState((watch?.tags || []).join(", "));
+  const [headersText, setHeadersText] = useState(
+    Object.entries(watch?.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n")
+  );
   const [checkNow, setCheckNow] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -50,41 +54,28 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
     if (!validateUrl(url)) return;
     setSaving(true);
     try {
+      const payload = {
+        url,
+        selector: selector || undefined,
+        interval: Number(interval),
+        ignore_patterns: parsePatterns(patternsText),
+        tags: tagsText.split(",").map((t) => t.trim()).filter(Boolean),
+        headers: Object.fromEntries(
+          headersText.split("\n").filter(Boolean).map((line) => {
+            const idx = line.indexOf(":");
+            return idx > 0 ? [line.slice(0, idx).trim(), line.slice(idx + 1).trim()] : [];
+          }).filter((e) => e.length === 2)
+        ),
+      };
       if (isEdit) {
-        const payload = {};
-        if (url !== watch.url) payload.url = url;
-        if ((selector || null) !== (watch.selector || null)) payload.selector = selector || null;
-        if (Number(interval) !== watch.interval) payload.interval = Number(interval);
-        const patterns = parsePatterns(patternsText);
-        if (JSON.stringify(patterns) !== JSON.stringify(watch.ignore_patterns || [])) {
-          payload.ignore_patterns = patterns;
-        }
-        if (Object.keys(payload).length === 0) {
-          onCancel();
-          return;
-        }
         const data = await api.updateWatch(watch.name, payload);
-        toast(
-          data.baseline_reset
-            ? `Updated ${watch.name} — baseline will be re-established on the next check`
-            : `Updated ${watch.name}`,
-          "ok",
-        );
+        toast(data.baseline_reset ? `Updated ${watch.name} — baseline reset` : `Updated ${watch.name}`, "ok");
       } else {
-        const payload = {
-          url,
-          name: name.trim() || undefined,
-          selector: selector || undefined,
-          interval: Number(interval),
-          ignore_patterns: parsePatterns(patternsText),
-          check_now: checkNow,
-        };
+        payload.name = name.trim() || undefined;
+        payload.check_now = checkNow;
         const data = await api.addWatch(payload);
-        if (data.result?.error) {
-          toast(`Watch added, but the baseline check failed: ${data.result.error}`, "warn");
-        } else {
-          toast(`Added ${data.watch.name}`, "ok");
-        }
+        if (data.result?.error) toast(`Watch added, but baseline check failed: ${data.result.error}`, "warn");
+        else toast(`Added ${data.watch.name}`, "ok");
       }
       onDone();
     } catch (err) {
@@ -122,8 +113,16 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
                value={interval} onChange={(e) => setInterval(e.target.value)} />
 
         <label htmlFor="wf-patterns">Ignore patterns (regex, one per line)</label>
-        <textarea id="wf-patterns" rows="3" placeholder={"Updated at \\d{4}\n\\d+ views"}
+        <textarea id="wf-patterns" rows="2" placeholder={"Updated at \\d{4}"}
                   value={patternsText} onChange={(e) => setPatternsText(e.target.value)} />
+
+        <label htmlFor="wf-tags">Tags (comma-separated)</label>
+        <input id="wf-tags" placeholder="production, critical"
+               value={tagsText} onChange={(e) => setTagsText(e.target.value)} />
+
+        <label htmlFor="wf-headers">Custom headers (Key: Value, one per line)</label>
+        <textarea id="wf-headers" rows="2" placeholder="Authorization: Bearer token123"
+                  value={headersText} onChange={(e) => setHeadersText(e.target.value)} />
 
         {!isEdit && (
           <label className="check-label">
@@ -135,9 +134,7 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
         {error && <p className="form-error">{error}</p>}
 
         <div className="modal-actions">
-          <button type="button" className="btn" onClick={onCancel} disabled={saving}>
-            Cancel
-          </button>
+          <button type="button" className="btn" onClick={onCancel} disabled={saving}>Cancel</button>
           <button type="submit" className="btn btn-primary" disabled={saving}>
             {saving ? <Spinner /> : isEdit ? "Save changes" : "Add watch"}
           </button>

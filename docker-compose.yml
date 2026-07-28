@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  pagewatch:
+    build: .
+    container_name: pagewatch
+    ports:
+      - "8787:8787"
+    volumes:
+      - pagewatch_data:/data
+    restart: unless-stopped
+
+volumes:
+  pagewatch_data:

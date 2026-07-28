@@ -13,7 +13,7 @@ class SeqFetcher:
         self.pages = list(pages)
         self.calls = 0
 
-    def __call__(self, url):
+    def __call__(self, url, **kwargs):
         self.calls += 1
         page = self.pages.pop(0) if len(self.pages) > 1 else self.pages[0]
         if isinstance(page, Exception):

@@ -19,7 +19,7 @@ class StaticFetcher:
     def __init__(self, html):
         self.html = html
 
-    def __call__(self, url):
+    def __call__(self, url, **kwargs):
         return self.html, url
 
 

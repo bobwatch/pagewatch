@@ -303,3 +303,47 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .row-muted {
   opacity: 0.55;
 }
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+.stat-card h3 {
+  margin: 0 0 4px 0;
+  font-size: 28px;
+  color: var(--accent);
+}
+.stat-card p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tag-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  margin-right: 4px;
+  font-weight: 500;
+}
+
+.tag-badge-sm {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  margin-right: 3px;
+  background: var(--accent);
+  color: #000;
+  font-weight: 500;
+}
