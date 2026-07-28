@@ -27,7 +27,7 @@ def _obfuscate(plain: str) -> str:
 def _deobfuscate(encoded: str) -> str:
     try:
         return base64.b64decode(encoded).decode()
-    except Exception:
+    except (ValueError, OSError):
         return encoded
 
 
@@ -146,7 +146,7 @@ class AlertManager:
                         server.login(user, password)
                     server.sendmail(from_addr, to_addrs, msg.as_string())
             report["ok"] = True
-        except Exception as exc:
+        except (smtplib.SMTPException, OSError) as exc:
             report["error"] = str(exc)
 
         return report
@@ -322,7 +322,7 @@ class AlertManager:
                 last_error = f"HTTP {report['status']}"
             except (requests.ConnectionError, requests.Timeout) as exc:
                 last_error = str(exc)
-            except Exception as exc:
+            except (requests.RequestException, OSError) as exc:
                 report["error"] = str(exc)
                 return report
             if attempt < WEBHOOK_RETRIES - 1:

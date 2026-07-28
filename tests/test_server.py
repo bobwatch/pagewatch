@@ -127,7 +127,7 @@ def test_watch_crud_and_validation():
 
 
 def test_add_with_check_now():
-    with running_server(PAGE_V1) as (base, store, _session):
+    with running_server(PAGE_V1) as (base, _store, _session):
         r = requests.post(f"{base}/api/watches", json={
             "url": "x.test", "name": "t1", "check_now": True,
         }, timeout=5)

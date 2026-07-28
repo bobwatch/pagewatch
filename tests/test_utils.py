@@ -143,7 +143,7 @@ class FlakyGetter:
 
 def test_fetch_page_retries_connection_errors():
     getter = FlakyGetter(failures=2, exc=requests.ConnectionError("refused"))
-    text, url = fetch_page("https://x.test", retries=2, backoff=0, getter=getter)
+    text, _url = fetch_page("https://x.test", retries=2, backoff=0, getter=getter)
     assert text == "<html>ok</html>"
     assert getter.calls == 3
 

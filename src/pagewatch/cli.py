@@ -722,7 +722,7 @@ def diff(name):
         return
 
     for line in diff_output.split("\n"):
-        if line.startswith("---") or line.startswith("+++"):
+        if line.startswith(("---", "+++")):
             console.print(f"[bold]{line}[/]")
         elif line.startswith("@@"):
             console.print(f"[cyan]{line}[/]")

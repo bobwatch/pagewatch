@@ -1,6 +1,6 @@
 import functools
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Callable
 
 from .storage import Storage
 from .utils import apply_ignore_patterns, compute_diff, content_hash, extract_text, fetch_page
