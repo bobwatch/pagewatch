@@ -589,6 +589,34 @@ def alert_remove(name):
         sys.exit(1)
 
 
+@alert.command("update")
+@click.argument("name")
+@click.option("--url", default=None, help="New webhook URL")
+@click.option("--format", "fmt", type=click.Choice(list(SUPPORTED_FORMATS)), default=None, help="New payload format")
+@click.option("--events", type=click.Choice(list(SUPPORTED_EVENTS)), default=None, help="Which events to subscribe to")
+def alert_update(name, url, fmt, events):
+    """Update an existing alert channel."""
+    kwargs = {}
+    if url is not None:
+        kwargs["url"] = url
+    if fmt is not None:
+        kwargs["format"] = fmt
+    if events is not None:
+        kwargs["events"] = events
+    if not kwargs:
+        console.print("[yellow]Nothing to update. Provide --url, --format, or --events.[/]")
+        return
+    channel = get_alert_manager().update_channel(name, **kwargs)
+    if not channel:
+        console.print(f"[red]Alert channel '{name}' not found.[/]")
+        sys.exit(1)
+    console.print(f"[green]Updated alert channel:[/] {name}")
+    for key, value in channel.items():
+        if key == "name":
+            continue
+        console.print(f"  {key}: {value}")
+
+
 @alert.command("test")
 @click.option("--name", "-n", default=None, help="Test a single channel by name (default: all)")
 def alert_test(name):

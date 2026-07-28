@@ -434,3 +434,15 @@ def test_alert_email_config_commands():
 
         result = invoke(["alert", "email", "show"], home)
         assert "smtp.test.com" in result.output
+
+
+def test_alert_update_channel():
+    with tempfile.TemporaryDirectory() as home:
+        invoke(["alert", "add", "https://hooks.example/a", "--name", "ops", "--format", "slack"], home)
+        result = invoke(["alert", "update", "ops", "--format", "discord", "--events", "all"], home)
+        assert result.exit_code == 0
+        assert "discord" in result.output
+        assert "all" in result.output
+
+        result = invoke(["alert", "update", "nope", "--format", "discord"], home)
+        assert result.exit_code == 1

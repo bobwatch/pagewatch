@@ -3,8 +3,9 @@ import { api } from "./api";
 import AlertsPanel from "./components/AlertsPanel";
 import SettingsPanel from "./components/SettingsPanel";
 import WatchList from "./components/WatchList";
+import DataPanel from "./components/DataPanel";
 
-const TABS = ["Watches", "Alerts", "Settings"];
+const TABS = ["Watches", "Alerts", "Data", "Settings"];
 
 export default function App() {
   const [tab, setTab] = useState("Watches");
@@ -58,6 +59,7 @@ export default function App() {
       <main className="content">
         {tab === "Watches" && <WatchList toast={toast} onDataChanged={refreshStatus} />}
         {tab === "Alerts" && <AlertsPanel toast={toast} status={status} onDataChanged={refreshStatus} />}
+        {tab === "Data" && <DataPanel toast={toast} status={status} onDataChanged={refreshStatus} />}
         {tab === "Settings" && <SettingsPanel toast={toast} status={status} />}
       </main>
 

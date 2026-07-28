@@ -210,7 +210,7 @@ def test_send_test_targets_named_or_all_channels():
 
 
 def test_email_config_get_set():
-    with manager() as (am, _session, _store):
+    with manager() as (am, _session, store):
         assert am.get_email_config() == {}
 
         cfg = am.set_email_config(
@@ -228,6 +228,13 @@ def test_email_config_get_set():
 
         reloaded = am.get_email_config()
         assert reloaded["smtp_host"] == "smtp.gmail.com"
+        # password is returned decoded
+        assert reloaded.get("smtp_pass") == "app-password"
+        # stored obfuscated on disk
+        raw_config = store.load_config()
+        email_on_disk = raw_config["alerts"]["email"]
+        assert "smtp_pass_obfuscated" in email_on_disk
+        assert email_on_disk["smtp_pass_obfuscated"] != "app-password"
 
 
 def test_email_config_empty_host_raises():
@@ -244,3 +251,24 @@ def test_dispatch_email_event_not_configured():
         result = am.dispatch_email_event({"event": "change", "name": "t1", "url": "https://x.test"})
         assert result["ok"] is False
         assert "not configured" in result["error"].lower()
+
+
+def test_update_channel():
+    with manager() as (am, _session, _store):
+        am.add_channel("https://hooks.example/a", name="ops", fmt="slack", events="change")
+        updated = am.update_channel("ops", url="https://hooks.example/b", fmt="discord", events="all")
+        assert updated is not None
+        assert updated["url"] == "https://hooks.example/b"
+        assert updated["format"] == "discord"
+        assert updated["events"] == "all"
+        assert am.update_channel("nope", url="https://x.test") is None
+
+
+def test_update_channel_partial():
+    with manager() as (am, _session, _store):
+        am.add_channel("https://hooks.example/a", name="ops", fmt="slack", events="change")
+        am.update_channel("ops", events="all")
+        c = am.list_channels()[0]
+        assert c["url"] == "https://hooks.example/a"
+        assert c["format"] == "slack"
+        assert c["events"] == "all"

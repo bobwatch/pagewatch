@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+from datetime import datetime, timezone
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -87,16 +88,23 @@ ROUTES = [
     ("POST", re.compile(r"^/api/watches/([^/]+)/pause$"), "h_pause_watch"),
     ("POST", re.compile(r"^/api/watches/([^/]+)/resume$"), "h_resume_watch"),
     ("GET", re.compile(r"^/api/watches/([^/]+)/history$"), "h_history"),
+    ("DELETE", re.compile(r"^/api/watches/([^/]+)/history$"), "h_delete_history"),
     ("GET", re.compile(r"^/api/watches/([^/]+)/diff$"), "h_diff"),
     ("POST", re.compile(r"^/api/check$"), "h_check_all"),
     ("GET", re.compile(r"^/api/config$"), "h_get_config"),
     ("PUT", re.compile(r"^/api/config$"), "h_put_config"),
     ("GET", re.compile(r"^/api/alerts$"), "h_list_alerts"),
     ("POST", re.compile(r"^/api/alerts$"), "h_add_alert"),
+    ("PATCH", re.compile(r"^/api/alerts/([^/]+)$"), "h_update_alert"),
     ("DELETE", re.compile(r"^/api/alerts/([^/]+)$"), "h_delete_alert"),
     ("POST", re.compile(r"^/api/alerts/test$"), "h_test_alerts"),
     ("GET", re.compile(r"^/api/alerts/email$"), "h_get_email_config"),
     ("PUT", re.compile(r"^/api/alerts/email$"), "h_set_email_config"),
+    ("GET", re.compile(r"^/api/export$"), "h_export"),
+    ("POST", re.compile(r"^/api/import$"), "h_import"),
+    ("POST", re.compile(r"^/api/daemon/start$"), "h_daemon_start"),
+    ("POST", re.compile(r"^/api/daemon/stop$"), "h_daemon_stop"),
+    ("GET", re.compile(r"^/api/daemon/status$"), "h_daemon_status"),
 ]
 
 
@@ -120,7 +128,49 @@ class PagewatchServer(ThreadingHTTPServer):
         self.alert_manager_factory = alert_manager_factory or partial(AlertManager, storage=self.storage)
         self.webui_dir = Path(webui_dir) if webui_dir else WEBUI_DIR
         self.write_lock = threading.Lock()
+        self._daemon_thread: threading.Thread | None = None
+        self._daemon_stop = threading.Event()
         super().__init__(address, RequestHandler)
+
+    def start_daemon(self) -> None:
+        if self._daemon_thread and self._daemon_thread.is_alive():
+            return
+        self._daemon_stop.clear()
+        self._daemon_thread = threading.Thread(target=self._daemon_loop, daemon=True)
+        self._daemon_thread.start()
+
+    def stop_daemon(self) -> None:
+        self._daemon_stop.set()
+        if self._daemon_thread:
+            self._daemon_thread.join(timeout=5)
+
+    @property
+    def daemon_running(self) -> bool:
+        return self._daemon_thread is not None and self._daemon_thread.is_alive()
+
+    def _daemon_loop(self) -> None:
+        from datetime import datetime
+        import time as _time
+        while not self._daemon_stop.is_set():
+            now = _time.time()
+            watches = self.storage.load_watches()
+            for w in watches:
+                if w.get("paused"):
+                    continue
+                last = w.get("last_checked")
+                interval = int(w.get("interval") or 3600)
+                if last:
+                    try:
+                        ts = datetime.fromisoformat(last).timestamp()
+                        if now < ts + interval:
+                            continue
+                    except ValueError:
+                        pass
+                monitor = self.monitor_factory()
+                result = monitor.check_one(w)
+                am = self.alert_manager_factory()
+                am.dispatch([result])
+            self._daemon_stop.wait(30)
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -284,11 +334,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             "watch_count": len(watches),
             "paused_count": paused_count,
             "alert_channel_count": len(channels),
-            "email_configured": bool(email_cfg.get("smtp_host")),
+            "email_configured": bool(email_cfg.get("smtp_host") or email_cfg.get("smtp_pass_obfuscated")),
             "data_dir": str(storage._root),
             "ui_built": (self.server.webui_dir / "index.html").is_file(),
             "alert_formats": list(SUPPORTED_FORMATS),
             "alert_events": list(SUPPORTED_EVENTS),
+            "daemon_running": self.server.daemon_running,
         })
 
     def h_list_watches(self, query=None):
@@ -483,10 +534,34 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise ApiError(404, str(exc))
         self._send_json(200, {"deliveries": deliveries})
 
+    def h_update_alert(self, name, query=None):
+        body = self._read_json()
+        manager = self.server.alert_manager_factory()
+        with self.server.write_lock:
+            kwargs = {}
+            if "url" in body:
+                kwargs["url"] = str(body["url"])
+            if "format" in body:
+                fmt = str(body["format"])
+                if fmt not in SUPPORTED_FORMATS:
+                    raise ApiError(400, f"Unsupported format '{fmt}'")
+                kwargs["format"] = fmt
+            if "events" in body:
+                ev = str(body["events"])
+                if ev not in SUPPORTED_EVENTS:
+                    raise ApiError(400, f"Unsupported events '{ev}'")
+                kwargs["events"] = ev
+            if not kwargs:
+                raise ApiError(400, "No fields to update (url, format, events)")
+            channel = manager.update_channel(name, **kwargs)
+            if not channel:
+                raise ApiError(404, f"Alert channel '{name}' not found.")
+        self._send_json(200, channel)
+
     def h_get_email_config(self, query=None):
         cfg = self.server.alert_manager_factory().get_email_config()
-        safe = {k: v for k, v in cfg.items() if k != "smtp_pass"}
-        safe["smtp_pass_set"] = bool(cfg.get("smtp_pass"))
+        safe = {k: v for k, v in cfg.items() if k != "smtp_pass" and k != "smtp_pass_obfuscated"}
+        safe["smtp_pass_set"] = bool(cfg.get("smtp_pass") or cfg.get("smtp_pass_obfuscated"))
         self._send_json(200, safe)
 
     def h_set_email_config(self, query=None):
@@ -505,9 +580,84 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
             except ValueError as exc:
                 raise ApiError(400, str(exc))
-        safe = {k: v for k, v in cfg.items() if k != "smtp_pass"}
-        safe["smtp_pass_set"] = bool(cfg.get("smtp_pass"))
+        safe = {k: v for k, v in cfg.items() if k != "smtp_pass" and k != "smtp_pass_obfuscated"}
+        safe["smtp_pass_set"] = bool(cfg.get("smtp_pass") or cfg.get("smtp_pass_obfuscated"))
         self._send_json(200, safe)
+
+    def h_export(self, query=None):
+        storage = self.server.storage
+        watches = storage.load_watches()
+        snapshots = {}
+        for w in watches:
+            snap = storage.load_snapshot(w["name"])
+            if snap:
+                latest = dict(snap.get("latest", {}))
+                latest.pop("html", None)
+                entry = {"history": snap.get("history", []), "latest": latest}
+                if snap.get("previous"):
+                    entry["previous"] = snap["previous"]
+                snapshots[w["name"]] = entry
+        data = {
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "pagewatch_version": __version__,
+            "watches": watches,
+            "snapshots": snapshots,
+        }
+        self._send_json(200, data)
+
+    def h_import(self, query=None):
+        body = self._read_json()
+        storage = self.server.storage
+        watches = body.get("watches")
+        if not isinstance(watches, list):
+            raise ApiError(400, "Invalid backup: missing 'watches' list.")
+        incoming = [w for w in watches if isinstance(w, dict) and w.get("name") and w.get("url")]
+        snapshots = body.get("snapshots") or {}
+        replace = bool(body.get("replace"))
+        with self.server.write_lock:
+            if replace:
+                for w in storage.load_watches():
+                    storage.remove_watch(w["name"])
+                storage.save_watches(incoming)
+                imported = [w["name"] for w in incoming]
+                skipped = []
+            else:
+                current = storage.load_watches()
+                existing_names = {w["name"] for w in current}
+                imported, skipped = [], []
+                for w in incoming:
+                    if w["name"] in existing_names:
+                        skipped.append(w["name"])
+                        continue
+                    current.append(w)
+                    imported.append(w["name"])
+                storage.save_watches(current)
+            restored = 0
+            for wname in imported:
+                snap = snapshots.get(wname)
+                if isinstance(snap, dict) and snap.get("history"):
+                    storage.restore_snapshot(wname, snap)
+                    restored += 1
+        self._send_json(200, {"imported": len(imported), "skipped": len(skipped), "restored": restored})
+
+    def h_daemon_start(self, query=None):
+        self.server.start_daemon()
+        self._send_json(200, {"running": True})
+
+    def h_daemon_stop(self, query=None):
+        self.server.stop_daemon()
+        self._send_json(200, {"running": False})
+
+    def h_daemon_status(self, query=None):
+        self._send_json(200, {"running": self.server.daemon_running})
+
+    def h_delete_history(self, name, query=None):
+        with self.server.write_lock:
+            self._get_watch_or_404(name)
+            snap_file = self.server.storage._snapshots_dir / f"{name}.json"
+            if snap_file.is_file():
+                snap_file.unlink()
+        self._send_json(200, {"removed": name})
 
 
 def create_server(host: str = "127.0.0.1", port: int = 8787, **kwargs) -> PagewatchServer:

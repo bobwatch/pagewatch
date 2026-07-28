@@ -1,25 +1,9 @@
-#!/usr/bin/env python
-"""Webhook alert channels for pagewatch.
-
-Channels are stored in ``config.json`` under ``alerts.webhooks``::
-
-    {
-      "alerts": {
-        "webhooks": [
-          {"name": "ops", "url": "https://hooks.slack.com/...",
-           "format": "slack", "events": "change"}
-        ]
-      }
-    }
-
-Supported payload formats: ``generic`` (full JSON event), ``slack``,
-``discord``, ``feishu`` (Lark), and ``dingtalk``. Channels can subscribe to
-``change`` events, ``error`` events, or ``all``.
-"""
 from __future__ import annotations
 
+import base64
 import smtplib
 import ssl
+import time
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from typing import Any
@@ -32,10 +16,22 @@ SUPPORTED_FORMATS = ("generic", "slack", "discord", "feishu", "dingtalk")
 SUPPORTED_EVENTS = ("change", "error", "all")
 DEFAULT_TIMEOUT = 10
 DIFF_PREVIEW_CHARS = 800
+WEBHOOK_RETRIES = 3
+WEBHOOK_BACKOFF = 1.5
+
+
+def _obfuscate(plain: str) -> str:
+    return base64.b64encode(plain.encode()).decode() if plain else ""
+
+
+def _deobfuscate(encoded: str) -> str:
+    try:
+        return base64.b64decode(encoded).decode()
+    except Exception:
+        return encoded
 
 
 def render_text(event: dict[str, Any]) -> str:
-    """Render a human-readable one-line (plus optional diff) message."""
     kind = event.get("event")
     name = event.get("name")
     url = event.get("url")
@@ -51,7 +47,6 @@ def render_text(event: dict[str, Any]) -> str:
 
 
 def build_payload(fmt: str, event: dict[str, Any]) -> dict[str, Any]:
-    """Build the provider-specific JSON payload for an event."""
     text = render_text(event)
     if fmt == "slack":
         return {"text": text}
@@ -70,8 +65,6 @@ def build_payload(fmt: str, event: dict[str, Any]) -> dict[str, Any]:
 
 
 class AlertManager:
-    """Manages webhook channels and email alerts, dispatching events to them."""
-
     def __init__(self, storage: Storage | None = None, session: Any = None, timeout: int = DEFAULT_TIMEOUT):
         self._store = storage or Storage()
         self._session = session or requests
@@ -83,7 +76,10 @@ class AlertManager:
 
     def get_email_config(self) -> dict[str, Any]:
         config = self._store.load_config()
-        return config.get("alerts", {}).get("email", {})
+        raw = config.get("alerts", {}).get("email", {})
+        if raw.get("smtp_pass_obfuscated"):
+            raw["smtp_pass"] = _deobfuscate(raw["smtp_pass_obfuscated"])
+        return raw
 
     def set_email_config(
         self,
@@ -101,7 +97,7 @@ class AlertManager:
             "smtp_host": smtp_host,
             "smtp_port": smtp_port,
             "smtp_user": smtp_user or "",
-            "smtp_pass": smtp_pass or "",
+            "smtp_pass_obfuscated": _obfuscate(smtp_pass or ""),
             "smtp_tls": smtp_tls,
             "from_addr": from_addr or smtp_user or "",
             "to_addrs": to_addrs or "",
@@ -109,14 +105,14 @@ class AlertManager:
         config = self._store.load_config()
         config.setdefault("alerts", {})["email"] = email_cfg
         self._store.save_config(config)
-        return email_cfg
+        return self.get_email_config()
 
     def send_email(self, subject: str, body: str) -> dict[str, Any]:
         email_cfg = self.get_email_config()
         report: dict[str, Any] = {"ok": False, "error": None}
 
         if not email_cfg.get("smtp_host") or not email_cfg.get("to_addrs"):
-            report["error"] = "Email not configured. Use 'pagewatch alert email set' first."
+            report["error"] = "Email not configured."
             return report
 
         host = email_cfg["smtp_host"]
@@ -220,6 +216,23 @@ class AlertManager:
         self._store.save_config(config)
         return channel
 
+    def update_channel(self, name: str, **kwargs) -> dict[str, Any] | None:
+        config = self._store.load_config()
+        webhooks = config.setdefault("alerts", {}).setdefault("webhooks", [])
+        for c in webhooks:
+            if c.get("name") == name:
+                if "url" in kwargs:
+                    c["url"] = kwargs["url"]
+                if "fmt" in kwargs:
+                    c["format"] = kwargs["fmt"]
+                if "format" in kwargs:
+                    c["format"] = kwargs["format"]
+                if "events" in kwargs:
+                    c["events"] = kwargs["events"]
+                self._store.save_config(config)
+                return c
+        return None
+
     def remove_channel(self, name: str) -> bool:
         config = self._store.load_config()
         webhooks = config.get("alerts", {}).get("webhooks", [])
@@ -239,7 +252,6 @@ class AlertManager:
     # -- dispatch ------------------------------------------------------------
 
     def dispatch(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Send alerts for check results (changes and errors). Returns delivery reports."""
         deliveries: list[dict[str, Any]] = []
         for result in results:
             if result.get("paused"):
@@ -271,7 +283,6 @@ class AlertManager:
         return deliveries
 
     def send_test(self, name: str | None = None) -> list[dict[str, Any]]:
-        """Send a test event to one named channel, or to all channels."""
         channels = self.list_channels()
         if name is not None:
             channels = [c for c in channels if c.get("name") == name]
@@ -297,12 +308,24 @@ class AlertManager:
             "status": None,
             "error": None,
         }
-        try:
-            resp = self._session.post(channel["url"], json=payload, timeout=self._timeout)
-            report["status"] = getattr(resp, "status_code", None)
-            report["ok"] = report["status"] is not None and 200 <= report["status"] < 300
-            if not report["ok"]:
-                report["error"] = f"HTTP {report['status']}"
-        except Exception as exc:
-            report["error"] = str(exc)
+        last_error: str | None = None
+        for attempt in range(WEBHOOK_RETRIES):
+            try:
+                resp = self._session.post(channel["url"], json=payload, timeout=self._timeout)
+                report["status"] = getattr(resp, "status_code", None)
+                report["ok"] = report["status"] is not None and 200 <= report["status"] < 300
+                if report["ok"]:
+                    return report
+                if report["status"] is not None and 400 <= report["status"] < 500:
+                    report["error"] = f"HTTP {report['status']} (not retried)"
+                    return report
+                last_error = f"HTTP {report['status']}"
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                last_error = str(exc)
+            except Exception as exc:
+                report["error"] = str(exc)
+                return report
+            if attempt < WEBHOOK_RETRIES - 1:
+                time.sleep(WEBHOOK_BACKOFF * (2 ** attempt))
+        report["error"] = last_error
         return report

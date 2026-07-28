@@ -8,7 +8,6 @@ const FALLBACK_EVENTS = ["change", "error", "all"];
 export default function AlertsPanel({ toast, status, onDataChanged }) {
   const formats = status?.alert_formats || FALLBACK_FORMATS;
   const events = status?.alert_events || FALLBACK_EVENTS;
-  const emailConfigured = status?.email_configured;
 
   const [channels, setChannels] = useState(null);
   const [url, setUrl] = useState("");
@@ -16,6 +15,10 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
   const [format, setFormat] = useState("generic");
   const [eventKind, setEventKind] = useState("change");
   const [busy, setBusy] = useState({});
+  const [editingChannel, setEditingChannel] = useState(null);
+  const [editUrl, setEditUrl] = useState("");
+  const [editFormat, setEditFormat] = useState("generic");
+  const [editEvents, setEditEvents] = useState("change");
 
   // Email config state
   const [emailCfg, setEmailCfg] = useState(null);
@@ -86,6 +89,34 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
       onDataChanged();
     } catch (err) {
       toast(err.message, "err");
+    }
+  }
+
+  function startEdit(channel) {
+    setEditingChannel(channel.name);
+    setEditUrl(channel.url);
+    setEditFormat(channel.format || "generic");
+    setEditEvents(channel.events || "change");
+  }
+
+  async function saveEdit(event) {
+    event.preventDefault();
+    const key = `edit-${editingChannel}`;
+    setBusy((current) => ({ ...current, [key]: true }));
+    try {
+      const payload = {};
+      if (editUrl) payload.url = editUrl;
+      if (editFormat) payload.format = editFormat;
+      if (editEvents) payload.events = editEvents;
+      await api.updateAlert(editingChannel, payload);
+      toast(`Updated ${editingChannel}`, "ok");
+      setEditingChannel(null);
+      await load();
+      onDataChanged();
+    } catch (err) {
+      toast(err.message, "err");
+    } finally {
+      setBusy((current) => ({ ...current, [key]: false }));
     }
   }
 
@@ -213,6 +244,10 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
                   <td>{channel.events || "change"}</td>
                   <td className="cell-url" title={channel.url}>{channel.url}</td>
                   <td className="col-actions">
+                    <button type="button" className="btn btn-sm" onClick={() => startEdit(channel)}
+                            disabled={busy[`edit-${channel.name}`]}>
+                      Edit
+                    </button>
                     <button type="button" className="btn btn-sm" onClick={() => testChannel(channel.name)}
                             disabled={busy[channel.name]}>
                       {busy[channel.name] ? <Spinner /> : "Test"}
@@ -226,6 +261,29 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {editingChannel && (
+        <div className="overlay" onClick={(e) => e.target === e.currentTarget && setEditingChannel(null)}>
+          <form className="modal" onSubmit={saveEdit}>
+            <h3>Edit channel — {editingChannel}</h3>
+            <label htmlFor="al-edit-url">Webhook URL</label>
+            <input id="al-edit-url" required value={editUrl}
+                   onChange={(e) => setEditUrl(e.target.value)} />
+            <label htmlFor="al-edit-format">Format</label>
+            <select id="al-edit-format" value={editFormat} onChange={(e) => setEditFormat(e.target.value)}>
+              {formats.map((f) => <option key={f} value={f}>{f}</option>)}
+            </select>
+            <label htmlFor="al-edit-events">Events</label>
+            <select id="al-edit-events" value={editEvents} onChange={(e) => setEditEvents(e.target.value)}>
+              {events.map((ev) => <option key={ev} value={ev}>{ev}</option>)}
+            </select>
+            <div className="modal-actions">
+              <button type="button" className="btn" onClick={() => setEditingChannel(null)}>Cancel</button>
+              <button type="submit" className="btn btn-primary">Save</button>
+            </div>
+          </form>
         </div>
       )}
 

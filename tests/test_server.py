@@ -273,6 +273,62 @@ def test_status_includes_paused_count():
         assert data["email_configured"] is False
 
 
+def test_update_alert_endpoint():
+    with running_server() as (base, _store, _session):
+        requests.post(f"{base}/api/alerts", json={
+            "url": "https://hooks.example/a", "name": "ops", "format": "slack", "events": "change",
+        }, timeout=5)
+        r = requests.patch(f"{base}/api/alerts/ops", json={"format": "discord", "events": "all"}, timeout=5)
+        assert r.status_code == 200
+        assert r.json()["format"] == "discord"
+
+        r = requests.patch(f"{base}/api/alerts/nope", json={"format": "discord"}, timeout=5)
+        assert r.status_code == 404
+
+
+def test_export_endpoint():
+    with running_server(PAGE_V1) as (base, store, _session):
+        store.add_watch("t1", "https://x.test")
+        r = requests.get(f"{base}/api/export", timeout=5)
+        assert r.status_code == 200
+        data = r.json()
+        assert len(data["watches"]) == 1
+        assert data["watches"][0]["name"] == "t1"
+
+
+def test_daemon_endpoints():
+    with running_server() as (base, _store, _session):
+        r = requests.get(f"{base}/api/daemon/status", timeout=5)
+        assert r.status_code == 200
+        assert r.json()["running"] is False
+
+        r = requests.post(f"{base}/api/daemon/start", timeout=5)
+        assert r.status_code == 200
+        assert r.json()["running"] is True
+
+        r = requests.get(f"{base}/api/daemon/status", timeout=5)
+        assert r.json()["running"] is True
+
+        r = requests.post(f"{base}/api/daemon/stop", timeout=5)
+        assert r.status_code == 200
+        assert r.json()["running"] is False
+
+
+def test_delete_history_endpoint():
+    with running_server(PAGE_V1, PAGE_V2) as (base, store, _session):
+        store.add_watch("t1", "https://x.test")
+        with store._snapshots_dir.joinpath("t1.json").open("w") as f:
+            import json
+            json.dump({"history": [{"ts": "t1"}]}, f)
+        assert store._snapshots_dir.joinpath("t1.json").is_file()
+        r = requests.delete(f"{base}/api/watches/t1/history", timeout=5)
+        assert r.status_code == 200
+        assert not store._snapshots_dir.joinpath("t1.json").is_file()
+
+        r = requests.delete(f"{base}/api/watches/nope/history", timeout=5)
+        assert r.status_code == 404
+
+
 def test_unknown_api_route_is_404_json():
     with running_server() as (base, _store, _session):
         r = requests.get(f"{base}/api/nope", timeout=5)
