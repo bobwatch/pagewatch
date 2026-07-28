@@ -93,6 +93,14 @@ def test_check_all_covers_every_watch():
         assert {r["name"] for r in results} == {"a", "b"}
 
 
+def test_check_all_skips_paused_watches():
+    with env(PAGE_V1) as (store, monitor):
+        store.add_watch("a", "https://a.test")
+        store.add_watch("b", "https://b.test", paused=True)
+        results = monitor.check_all()
+        assert {r["name"] for r in results} == {"a"}
+
+
 PAGE_NOISY_V1 = "<html><body><p>price: 100</p><p>updated at 11:00:00</p></body></html>"
 PAGE_NOISY_V2 = "<html><body><p>price: 100</p><p>updated at 12:34:56</p></body></html>"
 PAGE_NOISY_V3 = "<html><body><p>price: 200</p><p>updated at 13:00:00</p></body></html>"

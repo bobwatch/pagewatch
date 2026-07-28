@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { Badge, Spinner, shortHash } from "./common";
 
@@ -15,23 +15,45 @@ export default function WatchDetail({ name, liveResult, onClose }) {
   const [diffData, setDiffData] = useState(null);
   const [historyData, setHistoryData] = useState(null);
   const [error, setError] = useState(null);
+  const [loaded, setLoaded] = useState({});
+
+  const loadDiff = useCallback(async () => {
+    if (loaded.diff) return;
+    try {
+      const data = await api.diff(name);
+      if (!loaded.diff) {
+        setDiffData(data);
+        setLoaded((prev) => ({ ...prev, diff: true }));
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [name, loaded.diff]);
+
+  const loadHistory = useCallback(async () => {
+    if (loaded.history) return;
+    try {
+      const data = await api.history(name, 100);
+      if (!loaded.history) {
+        setHistoryData(data);
+        setLoaded((prev) => ({ ...prev, history: true }));
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [name, loaded.history]);
 
   useEffect(() => {
-    let cancelled = false;
     setDiffData(null);
     setHistoryData(null);
     setError(null);
-    Promise.all([api.diff(name), api.history(name, 100)])
-      .then(([diff, history]) => {
-        if (cancelled) return;
-        setDiffData(diff);
-        setHistoryData(history);
-      })
-      .catch((err) => !cancelled && setError(err.message));
-    return () => {
-      cancelled = true;
-    };
+    setLoaded({});
   }, [name, liveResult]);
+
+  useEffect(() => {
+    if (view === "diff") loadDiff();
+    else loadHistory();
+  }, [view, loadDiff, loadHistory]);
 
   const diffText = diffData?.diff;
 
@@ -57,7 +79,8 @@ export default function WatchDetail({ name, liveResult, onClose }) {
         </div>
 
         {error && <p className="form-error">{error}</p>}
-        {!error && !diffData && <Spinner />}
+        {!error && view === "diff" && !diffData && <Spinner />}
+        {!error && view === "history" && !historyData && <Spinner />}
 
         {view === "diff" && diffData && (
           <div className="drawer-body">
@@ -69,7 +92,7 @@ export default function WatchDetail({ name, liveResult, onClose }) {
                 <div className="diff">
                   {diffText.split("\n").map((line, index) => (
                     <div key={index} className={diffLineClass(line)}>
-                      {line || " "}
+                      {line || " "}
                     </div>
                   ))}
                 </div>

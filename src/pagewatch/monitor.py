@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import functools
 from datetime import datetime, timezone
 from typing import Callable
@@ -8,13 +7,6 @@ from .utils import apply_ignore_patterns, compute_diff, content_hash, extract_te
 
 
 class Monitor:
-    """Runs change checks against watched pages.
-
-    A custom ``fetcher`` callable (``url -> (html, final_url)``) may be
-    injected, e.g. for testing or for JavaScript-rendering backends. When no
-    fetcher is given, one is built from the stored config (proxy, retries).
-    """
-
     def __init__(self, storage: Storage | None = None, fetcher: Callable[[str], tuple[str, str]] | None = None):
         self._store = storage or Storage()
         if fetcher is None:
@@ -30,6 +22,8 @@ class Monitor:
         watches = self._store.load_watches()
         results = []
         for w in watches:
+            if w.get("paused"):
+                continue
             result = self.check_one(w)
             results.append(result)
         return results
@@ -77,6 +71,8 @@ class Monitor:
                     result["diff"] = compute_diff(old_text, text)
                 result["changed"] = True
 
+            self._store.save_snapshot(name, new_hash, text, html)
+
             watch["last_hash"] = new_hash
             watch["last_checked"] = result["timestamp"]
             watch["check_count"] = (watch.get("check_count") or 0) + 1
@@ -89,9 +85,7 @@ class Monitor:
                 last_status="ok",
             )
 
-            self._store.save_snapshot(name, new_hash, text, html)
-
-        except Exception as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             result["error"] = str(exc)
             watch["error_count"] = (watch.get("error_count") or 0) + 1
             watch["check_count"] = (watch.get("check_count") or 0) + 1
@@ -107,7 +101,6 @@ class Monitor:
         return result
 
     def diff(self, name: str) -> str | None:
-        """Return the diff between the two most recent distinct snapshots."""
         snapshot = self._store.load_snapshot(name)
         if not snapshot:
             return None

@@ -38,7 +38,6 @@ dependencies = [
   "beautifulsoup4>=4.12",
   "click>=8.1",
   "rich>=13.7",
-  "pyyaml>=6.0",
 ]
 
 [project.urls]
@@ -64,4 +63,4 @@ target-version = "py310"
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]
-pagewatch = ["webui/index.html", "webui/assets/*"]
+pagewatch = ["webui/**/*"]

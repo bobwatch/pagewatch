@@ -44,6 +44,7 @@ from .monitor import Monitor
 from .storage import Storage
 from .utils import is_valid_url, normalize_url
 
+MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
 WEBUI_DIR = Path(__file__).parent / "webui"
 
 CONTENT_TYPES = {
@@ -128,7 +129,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     # -- plumbing ------------------------------------------------------------
 
-    def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+    def log_message(self, format, *args):
         pass  # keep the terminal clean; errors surface as JSON responses
 
     def _send_json(self, status: int, payload: Any) -> None:
@@ -137,6 +138,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
 
@@ -144,6 +148,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return {}
+        if length > MAX_BODY_SIZE:
+            raise ApiError(413, f"Request body too large (max {MAX_BODY_SIZE // 1024 // 1024} MB).")
         raw = self.rfile.read(length)
         try:
             data = json.loads(raw.decode("utf-8"))
@@ -176,7 +182,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json(exc.status, {"error": exc.message})
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except Exception as exc:  # pragma: no cover - defensive
+        except (OSError, ValueError, RuntimeError) as exc:
             self._send_json(500, {"error": f"Internal error: {exc}"})
 
     def do_GET(self):
@@ -193,6 +199,14 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         self._dispatch("DELETE")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
 
     # -- static UI -----------------------------------------------------------
 

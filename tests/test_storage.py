@@ -70,6 +70,25 @@ def test_restore_snapshot_roundtrip():
         assert store.load_snapshot("site") == doc
 
 
+def test_watch_name_validation():
+    with tmp_storage() as store:
+        try:
+            store.add_watch("", "https://x.test")
+            raise AssertionError("expected ValueError for empty name")
+        except ValueError:
+            pass
+        try:
+            store.add_watch("a" * 129, "https://x.test")
+            raise AssertionError("expected ValueError for long name")
+        except ValueError:
+            pass
+        try:
+            store.add_watch("../etc", "https://x.test")
+            raise AssertionError("expected ValueError for path separator")
+        except ValueError:
+            pass
+
+
 def test_update_watch_persists():
     with tmp_storage() as store:
         store.add_watch("site", "https://example.com")

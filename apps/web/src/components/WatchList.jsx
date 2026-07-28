@@ -20,6 +20,7 @@ export default function WatchList({ toast, onDataChanged }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editing, setEditing] = useState(null);
   const [detailName, setDetailName] = useState(null);
+  const [noAlerts, setNoAlerts] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -40,7 +41,7 @@ export default function WatchList({ toast, onDataChanged }) {
   async function checkAll() {
     setBusyFlag("__all__", true);
     try {
-      const data = await api.checkAll();
+      const data = await api.checkAll(!noAlerts);
       const map = {};
       for (const result of data.results) map[result.name] = result;
       setResults(map);
@@ -63,7 +64,7 @@ export default function WatchList({ toast, onDataChanged }) {
   async function checkOne(name) {
     setBusyFlag(name, true);
     try {
-      const data = await api.checkWatch(name);
+      const data = await api.checkWatch(name, !noAlerts);
       setResults((current) => ({ ...current, [name]: data.result }));
       if (data.result.error) toast(`${name}: ${data.result.error}`, "err");
       else if (data.result.changed) toast(`${name} changed`, "warn");
@@ -90,6 +91,8 @@ export default function WatchList({ toast, onDataChanged }) {
   }
 
   async function togglePause(watch) {
+    const key = `pause-${watch.name}`;
+    setBusyFlag(key, true);
     try {
       if (watch.paused) {
         await api.resumeWatch(watch.name);
@@ -102,6 +105,8 @@ export default function WatchList({ toast, onDataChanged }) {
       onDataChanged();
     } catch (err) {
       toast(err.message, "err");
+    } finally {
+      setBusyFlag(key, false);
     }
   }
 
@@ -117,6 +122,10 @@ export default function WatchList({ toast, onDataChanged }) {
       <div className="toolbar">
         <h2>Watches</h2>
         <div className="toolbar-actions">
+          <label className="check-label" style={{ fontSize: "12px", marginRight: "8px" }}>
+            <input type="checkbox" checked={noAlerts} onChange={(e) => setNoAlerts(e.target.checked)} />
+            Suppress alerts
+          </label>
           <button type="button" className="btn" onClick={checkAll} disabled={busy.__all__ || !watches?.length}>
             {busy.__all__ ? <Spinner /> : "Check all"}
           </button>
@@ -173,8 +182,10 @@ export default function WatchList({ toast, onDataChanged }) {
                           {busy[watch.name] ? <Spinner /> : "Check"}
                         </button>
                         <button type="button" className="btn btn-sm" onClick={() => togglePause(watch)}
-                                title={watch.paused ? "Resume" : "Pause"}>
-                          {watch.paused ? "▶" : "⏸"}
+                                title={watch.paused ? "Resume" : "Pause"}
+                                aria-label={watch.paused ? "Resume watch" : "Pause watch"}
+                                disabled={busy[`pause-${watch.name}`]}>
+                          {busy[`pause-${watch.name}`] ? <Spinner /> : watch.paused ? "▶" : "⏸"}
                         </button>
                         <button type="button" className="btn btn-sm" onClick={() => setDetailName(watch.name)}>
                           Details

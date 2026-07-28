@@ -27,6 +27,7 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
   const [fromAddr, setFromAddr] = useState("");
   const [toAddrs, setToAddrs] = useState("");
   const [emailSaving, setEmailSaving] = useState(false);
+  const [emailTesting, setEmailTesting] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -125,6 +126,23 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
       toast(err.message, "err");
     } finally {
       setEmailSaving(false);
+    }
+  }
+
+  async function testEmail() {
+    setEmailTesting(true);
+    try {
+      const data = await api.testAlerts(null);
+      for (const delivery of data.deliveries) {
+        if (delivery.channel === "email") {
+          if (delivery.ok) toast("Email test delivered", "ok");
+          else toast(`Email test failed: ${delivery.error}`, "err");
+        }
+      }
+    } catch (err) {
+      toast(err.message, "err");
+    } finally {
+      setEmailTesting(false);
     }
   }
 
@@ -251,6 +269,10 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
           <div>
             <button type="submit" className="btn btn-primary" disabled={emailSaving}>
               {emailSaving ? <Spinner /> : "Save email settings"}
+            </button>
+            <button type="button" className="btn" style={{ marginLeft: "8px" }}
+                    onClick={testEmail} disabled={emailTesting || !smtpHost}>
+              {emailTesting ? <Spinner /> : "Send test email"}
             </button>
           </div>
         </form>

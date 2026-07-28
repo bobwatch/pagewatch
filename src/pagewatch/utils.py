@@ -23,6 +23,16 @@ def is_valid_url(url: str) -> bool:
     return bool(parsed.scheme and parsed.netloc)
 
 
+def _parse_charset(content_type: str) -> str | None:
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.lower().startswith("charset="):
+            cs = part.split("=", 1)[1].strip().strip("'\"")
+            if cs:
+                return cs
+    return None
+
+
 def fetch_page(
     url: str,
     timeout: int = 30,
@@ -31,13 +41,6 @@ def fetch_page(
     backoff: float = 1.5,
     getter=None,
 ) -> tuple[str, str]:
-    """Fetch a page, with optional HTTP(S) proxy and retries.
-
-    Connection errors, timeouts, and 5xx responses are retried with
-    exponential backoff (``backoff * 2**attempt`` seconds); 4xx responses
-    raise immediately. ``getter`` allows injecting a ``requests.get``
-    replacement for testing.
-    """
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -57,10 +60,9 @@ def fetch_page(
             resp = get(url, headers=headers, timeout=timeout, proxies=proxies)
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "").lower()
-            encoding = "utf-8"
-            if "charset=" in content_type:
-                encoding = content_type.split("charset=")[-1].split(";")[0].strip()
-            resp.encoding = encoding
+            charset = _parse_charset(content_type)
+            if charset:
+                resp.encoding = charset
             return resp.text, url
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None

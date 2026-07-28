@@ -9,6 +9,15 @@ function parsePatterns(text) {
     .filter(Boolean);
 }
 
+function isValidUrl(str) {
+  try {
+    const url = new URL(str.startsWith("//") ? "https:" + str : str);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export default function WatchForm({ watch, toast, onDone, onCancel }) {
   const isEdit = Boolean(watch);
   const [url, setUrl] = useState(watch?.url || "");
@@ -16,13 +25,29 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
   const [selector, setSelector] = useState(watch?.selector || "");
   const [interval, setInterval] = useState(watch?.interval ?? 3600);
   const [patternsText, setPatternsText] = useState((watch?.ignore_patterns || []).join("\n"));
-  const [checkNow, setCheckNow] = useState(true);
+  const [checkNow, setCheckNow] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [urlError, setUrlError] = useState(null);
+
+  function validateUrl(value) {
+    if (!value.trim()) {
+      setUrlError("URL is required");
+      return false;
+    }
+    const normalized = value.startsWith("http://") || value.startsWith("https://") ? value : "https://" + value;
+    if (!isValidUrl(normalized)) {
+      setUrlError("Invalid URL format");
+      return false;
+    }
+    setUrlError(null);
+    return true;
+  }
 
   async function submit(event) {
     event.preventDefault();
     setError(null);
+    if (!validateUrl(url)) return;
     setSaving(true);
     try {
       if (isEdit) {
@@ -76,7 +101,9 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
 
         <label htmlFor="wf-url">URL</label>
         <input id="wf-url" required placeholder="https://example.com/pricing"
-               value={url} onChange={(e) => setUrl(e.target.value)} />
+               value={url} onChange={(e) => { setUrl(e.target.value); setUrlError(null); }}
+               onBlur={() => url && validateUrl(url)} />
+        {urlError && <p className="form-error">{urlError}</p>}
 
         {!isEdit && (
           <>
@@ -91,7 +118,7 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
                value={selector} onChange={(e) => setSelector(e.target.value)} />
 
         <label htmlFor="wf-interval">Check interval (seconds)</label>
-        <input id="wf-interval" type="number" min="1" required
+        <input id="wf-interval" type="number" min="1" step="1" required
                value={interval} onChange={(e) => setInterval(e.target.value)} />
 
         <label htmlFor="wf-patterns">Ignore patterns (regex, one per line)</label>

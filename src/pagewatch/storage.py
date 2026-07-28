@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 import copy
 import json
 from datetime import datetime, timezone
@@ -14,6 +13,32 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "retries": 2,
 }
 
+MAX_HISTORY = 1000
+
+
+def _atomic_write(path: Path, data: str) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(data, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _safe_json_load(path: Path) -> Any | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _validate_name(name: str) -> str:
+    name = name.strip()
+    if not name:
+        raise ValueError("Name must not be empty.")
+    if len(name) > 128:
+        raise ValueError("Name must be at most 128 characters.")
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError("Name must not contain path separators.")
+    return name
+
 
 class Storage:
     def __init__(self, path: Path | None = None):
@@ -25,28 +50,21 @@ class Storage:
         self._snapshots_dir.mkdir(exist_ok=True)
 
     def load_config(self) -> dict[str, Any]:
-        """Load config, merging defaults so older config files gain new keys."""
         config = copy.deepcopy(DEFAULT_CONFIG)
-        if self._config_file.is_file():
-            loaded = json.loads(self._config_file.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                config.update(loaded)
+        loaded = _safe_json_load(self._config_file)
+        if isinstance(loaded, dict):
+            config.update(loaded)
         return config
 
     def save_config(self, config: dict[str, Any]) -> None:
-        self._config_file.write_text(
-            json.dumps(config, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        _atomic_write(self._config_file, json.dumps(config, indent=2, ensure_ascii=False))
 
     def load_watches(self) -> list[dict[str, Any]]:
-        if self._watches_file.is_file():
-            return json.loads(self._watches_file.read_text(encoding="utf-8"))
-        return []
+        data = _safe_json_load(self._watches_file)
+        return data if isinstance(data, list) else []
 
     def save_watches(self, watches: list[dict[str, Any]]) -> None:
-        self._watches_file.write_text(
-            json.dumps(watches, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        _atomic_write(self._watches_file, json.dumps(watches, indent=2, ensure_ascii=False))
 
     def get_watch(self, name: str) -> dict[str, Any] | None:
         for w in self.load_watches():
@@ -63,6 +81,7 @@ class Storage:
         ignore_patterns: list[str] | None = None,
         paused: bool = False,
     ) -> dict[str, Any]:
+        name = _validate_name(name)
         watches = self.load_watches()
         watch = {
             "name": name,
@@ -104,16 +123,11 @@ class Storage:
 
     def load_snapshot(self, name: str) -> dict[str, Any] | None:
         snap_file = self._snapshots_dir / f"{name}.json"
-        if snap_file.is_file():
-            return json.loads(snap_file.read_text(encoding="utf-8"))
-        return None
+        return _safe_json_load(snap_file)
 
     def restore_snapshot(self, name: str, data: dict[str, Any]) -> None:
-        """Write a full snapshot document (e.g. from a backup) as-is."""
         snap_file = self._snapshots_dir / f"{name}.json"
-        snap_file.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        _atomic_write(snap_file, json.dumps(data, indent=2, ensure_ascii=False))
 
     def save_snapshot(self, name: str, content_hash: str, full_text: str, html: str) -> dict[str, Any]:
         snap_file = self._snapshots_dir / f"{name}.json"
@@ -123,10 +137,12 @@ class Storage:
             "content_hash": content_hash,
             "text_length": len(full_text),
         }
-        existing.setdefault("history", []).append(entry)
+        history = existing.setdefault("history", [])
+        history.append(entry)
 
-        # Preserve the outgoing snapshot so diffs can always compare the two
-        # most recent distinct versions of the page.
+        if len(history) > MAX_HISTORY:
+            history[:len(history) - MAX_HISTORY] = []
+
         prev_latest = existing.get("latest")
         if prev_latest and prev_latest.get("content_hash") != content_hash:
             existing["previous"] = {
@@ -141,7 +157,5 @@ class Storage:
             "html": html,
             "updated_at": entry["timestamp"],
         }
-        snap_file.write_text(
-            json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
+        _atomic_write(snap_file, json.dumps(existing, indent=2, ensure_ascii=False))
         return entry
