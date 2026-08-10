@@ -22,7 +22,7 @@ from .utils import is_valid_url, normalize_url, validate_selector
 
 console = Console()
 
-CONFIG_KEYS = ("interval", "proxy", "retries")
+CONFIG_KEYS = ("interval", "proxy", "retries", "error_threshold")
 
 
 def get_storage() -> Storage:
@@ -107,7 +107,9 @@ def init():
               help="Regex: matching text lines are ignored (repeatable). Great for timestamps/counters.")
 @click.option("--check-now", is_flag=True, help="Fetch immediately to establish the baseline")
 @click.option("--render", is_flag=True, help="Render the page with headless Chromium (requires pagewatch[render])")
-def add(url, name, selector, interval, ignore, check_now, render):
+@click.option("--alert-filter", default=None,
+              help="Regex: only send a change alert when the diff matches (e.g. 'price|stock')")
+def add(url, name, selector, interval, ignore, check_now, render, alert_filter):
     url = normalize_url(url)
     if not is_valid_url(url):
         console.print(f"[red]Error: Invalid URL '{url}'[/]")
@@ -137,6 +139,8 @@ def add(url, name, selector, interval, ignore, check_now, render):
         name = _default_watch_name(url)
 
     _validate_patterns(ignore)
+    if alert_filter:
+        _validate_patterns([alert_filter])
 
     if storage.get_watch(name):
         console.print(f"[red]Error: A watch named '{name}' already exists.[/]")
@@ -144,7 +148,7 @@ def add(url, name, selector, interval, ignore, check_now, render):
 
     try:
         watch = storage.add_watch(name=name, url=url, selector=selector, interval=interval,
-                                  ignore_patterns=list(ignore), render=render)
+                                  ignore_patterns=list(ignore), render=render, alert_filter=alert_filter)
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/]")
         sys.exit(1)
@@ -157,6 +161,8 @@ def add(url, name, selector, interval, ignore, check_now, render):
         console.print("  Render:   JS (Playwright)")
     if ignore:
         console.print(f"  Ignoring: {len(ignore)} pattern(s)")
+    if alert_filter:
+        console.print(f"  Alerts:   only when diff matches /{alert_filter}/")
 
     if check_now:
         result = get_monitor().check_one(watch)
@@ -178,7 +184,10 @@ def add(url, name, selector, interval, ignore, check_now, render):
 @click.option("--pause/--resume", default=None, help="Pause or resume this watch")
 @click.option("--render/--no-render", default=None,
               help="Enable/disable JS rendering via headless Chromium (resets the baseline)")
-def update(name, url, selector, clear_selector, interval, add_ignore, remove_ignore, clear_ignore, pause, render):
+@click.option("--alert-filter", default=None, help="Regex: only alert when the diff matches")
+@click.option("--clear-alert-filter", is_flag=True, help="Remove the alert filter (alert on every change)")
+def update(name, url, selector, clear_selector, interval, add_ignore, remove_ignore, clear_ignore, pause, render,
+           alert_filter, clear_alert_filter):
     """Modify an existing watch (URL, selector, interval, ignore patterns)."""
     storage = get_storage()
     watch = storage.get_watch(name)
@@ -244,6 +253,15 @@ def update(name, url, selector, clear_selector, interval, add_ignore, remove_ign
             # Rendered and static content differ hugely — keep the old
             # baseline and the next check would fire a false alert.
             reset_baseline = True
+
+    if alert_filter is not None and clear_alert_filter:
+        console.print("[red]Error: --alert-filter and --clear-alert-filter cannot be used together.[/]")
+        sys.exit(1)
+    if clear_alert_filter:
+        changes["alert_filter"] = None
+    elif alert_filter is not None:
+        _validate_patterns([alert_filter])
+        changes["alert_filter"] = alert_filter
 
     if not changes:
         console.print("[yellow]Nothing to update. See 'pagewatch update --help' for options.[/]")
@@ -355,7 +373,8 @@ def check(name, no_alerts, as_json, fail_on_change):
             console.print("[yellow]No watches to check.[/]")
         return
 
-    deliveries = [] if no_alerts else get_alert_manager().dispatch(results)
+    watches = {w["name"]: w for w in storage.load_watches()}
+    deliveries = [] if no_alerts else get_alert_manager().dispatch(results, watches=watches)
 
     if as_json:
         click.echo(json.dumps({"results": results, "alerts": deliveries}, indent=2, ensure_ascii=False))
@@ -368,7 +387,12 @@ def check(name, no_alerts, as_json, fail_on_change):
         table.add_column("Error")
 
         for r in results:
-            changed = "[bold red]YES[/]" if r["changed"] else "[green]no[/]"
+            if r["changed"]:
+                changed = "[bold red]YES[/]"
+                if r.get("alert_suppressed"):
+                    changed += " [dim](alert filtered)[/]"
+            else:
+                changed = "[green]no[/]"
             h = r.get("current_hash", "-")[:12]
             err = r.get("error") or "-"
             table.add_row(r["name"], r["url"][:40], changed, h, err)
@@ -441,16 +465,19 @@ def watch(once, no_alerts):
                 checked_any = True
                 try:
                     result = monitor.check_one(w)
+                    # Dispatch first so an alert-filtered change is marked on
+                    # the result before it is printed.
+                    deliveries = [] if no_alerts else alert_manager.dispatch([result], watches=watches)
                     if result.get("error"):
                         console.print(f"[dim]{stamp}[/] [red]error[/] {name}: {result['error']}")
                     elif result["changed"]:
-                        console.print(f"[dim]{stamp}[/] [bold red]CHANGED[/] {name}")
+                        suffix = " [dim](alert filtered)[/]" if result.get("alert_suppressed") else ""
+                        console.print(f"[dim]{stamp}[/] [bold red]CHANGED[/] {name}{suffix}")
                         if result.get("diff"):
                             console.print(result["diff"][:2000])
                     else:
                         console.print(f"[dim]{stamp}[/] [green]no change[/] {name}")
-                    if not no_alerts:
-                        _print_deliveries(alert_manager.dispatch([result]))
+                    _print_deliveries(deliveries)
                 except Exception as exc:  # noqa: BLE001 — a failing check must not kill the daemon
                     console.print(f"[dim]{stamp}[/] [red]error[/] {name}: {exc}")
                 next_run[name] = time.time() + interval
@@ -890,7 +917,7 @@ def config(ctx):
 @click.argument("key")
 @click.argument("value")
 def config_set(key, value):
-    """Set a config value. Keys: interval, proxy, retries ('none' clears proxy)."""
+    """Set a config value. Keys: interval, proxy, retries, error_threshold ('none' clears proxy)."""
     storage = get_storage()
     cfg = storage.load_config()
 
@@ -912,6 +939,16 @@ def config_set(key, value):
             console.print("[red]Error: retries must be an integer between 0 and 10.[/]")
             sys.exit(1)
         cfg["retries"] = parsed
+    elif key == "error_threshold":
+        try:
+            parsed = int(value)
+        except ValueError:
+            parsed = 0
+        if parsed <= 0:
+            console.print("[red]Error: error_threshold must be a positive integer "
+                          "(alert after N consecutive failures).[/]")
+            sys.exit(1)
+        cfg["error_threshold"] = parsed
     elif key == "proxy":
         value = value.strip()
         if value.lower() in ("none", "null", ""):

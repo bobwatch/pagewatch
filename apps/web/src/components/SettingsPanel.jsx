@@ -6,6 +6,7 @@ export default function SettingsPanel({ toast, status }) {
   const [config, setConfig] = useState(null);
   const [interval, setInterval] = useState("");
   const [retries, setRetries] = useState("");
+  const [errorThreshold, setErrorThreshold] = useState("");
   const [proxy, setProxy] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -16,6 +17,7 @@ export default function SettingsPanel({ toast, status }) {
         setConfig(cfg);
         setInterval(String(cfg.interval ?? 3600));
         setRetries(String(cfg.retries ?? 2));
+        setErrorThreshold(String(cfg.error_threshold ?? 1));
         setProxy(cfg.proxy || "");
       })
       .catch((err) => toast(err.message, "err"));
@@ -28,6 +30,7 @@ export default function SettingsPanel({ toast, status }) {
       const updated = await api.saveConfig({
         interval: Number(interval),
         retries: Number(retries),
+        error_threshold: Number(errorThreshold),
         proxy: proxy.trim() || null,
       });
       setConfig(updated);
@@ -59,6 +62,14 @@ export default function SettingsPanel({ toast, status }) {
             <input id="cf-retries" type="number" min="0" max="10" required
                    value={retries} onChange={(e) => setRetries(e.target.value)} />
             <p className="muted">Connection errors and 5xx responses retry with exponential backoff.</p>
+          </div>
+          <div className="field">
+            <label htmlFor="cf-error-threshold">Error alert threshold</label>
+            <input id="cf-error-threshold" type="number" min="1" required
+                   value={errorThreshold} onChange={(e) => setErrorThreshold(e.target.value)} />
+            <p className="muted">
+              Alert once after this many consecutive check failures; a recovery notice is sent when the watch succeeds again.
+            </p>
           </div>
           <div className="field">
             <label htmlFor="cf-proxy">HTTP(S) proxy (empty = direct)</label>

@@ -200,6 +200,26 @@ pagewatch alert remove slack-ops
 Channels subscribe to `change` events (default), `error` events, or `all`.
 Every `pagewatch check` and `pagewatch watch` run dispatches alerts automatically (skip with `--no-alerts`).
 
+### Alert only on what matters
+
+Changes are always detected and recorded — an alert filter only gates the
+notification. Give a watch a regex and you get alerted only when the diff
+matches (use `foo|bar` for several keywords):
+
+```bash
+pagewatch add https://example.com/pricing --name pricing --alert-filter "price|discount"
+pagewatch update pricing --alert-filter "in stock"   # retune later
+pagewatch update pricing --clear-alert-filter        # back to alerting on every change
+```
+
+Error alerts can be tamed too: with `error_threshold` a failing watch alerts
+once — when its consecutive failures reach the threshold — and sends a single
+`recovery` notice (to `events=all` channels and email) when it succeeds again:
+
+```bash
+pagewatch config set error_threshold 3   # alert on the 3rd consecutive failure, not every one
+```
+
 ### Script it (JSON output & exit codes)
 
 ```bash

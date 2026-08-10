@@ -11,6 +11,19 @@
   watches show a `JS` marker in `pagewatch list`. The REST API
   (`POST/PATCH /api/watches`, `/api/import`) accepts a boolean `render`
   field, and the dashboard form has a "Render JavaScript" checkbox.
+- **Keyword alert filters**: `pagewatch add/update --alert-filter <regex>`
+  (and `--clear-alert-filter`) alerts on a change only when the diff matches
+  the regex — detection, snapshots, and history are unaffected; filtered
+  changes are marked `alert_suppressed` in results and shown as "alert
+  filtered" in the CLI. The REST API and import validation accept an
+  `alert_filter` field, and the dashboard watch form has an "Alert filter"
+  input.
+- **Error alert threshold + recovery notices**: `pagewatch config set
+  error_threshold N` (default 1) makes a failing watch alert once — when its
+  consecutive failures exactly reach `N` — instead of on every failure, and a
+  watch that recovers after an alerted failure emits a one-shot `recovery`
+  event (delivered to `events=all` channels and email). The dashboard
+  settings page exposes the threshold.
 
 ## 0.5.1 — 2026-08-10
 

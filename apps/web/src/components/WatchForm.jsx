@@ -31,6 +31,7 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
   );
   const [checkNow, setCheckNow] = useState(false);
   const [render, setRender] = useState(Boolean(watch?.render));
+  const [alertFilter, setAlertFilter] = useState(watch?.alert_filter || "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [urlError, setUrlError] = useState(null);
@@ -61,6 +62,7 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
         interval: Number(interval),
         ignore_patterns: parsePatterns(patternsText),
         render,
+        alert_filter: alertFilter.trim() || null,
         tags: tagsText.split(",").map((t) => t.trim()).filter(Boolean),
         headers: Object.fromEntries(
           headersText.split("\n").filter(Boolean).map((line) => {
@@ -117,6 +119,13 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
         <label htmlFor="wf-patterns">Ignore patterns (regex, one per line)</label>
         <textarea id="wf-patterns" rows="2" placeholder={"Updated at \\d{4}"}
                   value={patternsText} onChange={(e) => setPatternsText(e.target.value)} />
+
+        <label htmlFor="wf-alert-filter">
+          Alert filter (regex)
+          <span style={{ color: "var(--muted)", fontSize: "12px" }}> — only alert when the diff matches</span>
+        </label>
+        <input id="wf-alert-filter" placeholder="price|in stock"
+               value={alertFilter} onChange={(e) => setAlertFilter(e.target.value)} />
 
         <label htmlFor="wf-tags">Tags (comma-separated)</label>
         <input id="wf-tags" placeholder="production, critical"

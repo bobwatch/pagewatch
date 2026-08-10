@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import smtplib
 import ssl
 import time
@@ -43,7 +44,21 @@ def render_text(event: dict[str, Any]) -> str:
         return text
     if kind == "error":
         return f"PageWatch: check failed for '{name}' ({url}): {event.get('error')}"
+    if kind == "recovery":
+        return f"PageWatch: '{name}' recovered after {event.get('recovered_after') or '?'} consecutive errors"
     return "PageWatch: test alert — your webhook channel is working."
+
+
+def _filter_matches(pattern: str, diff: str) -> bool:
+    """True when the diff matches the alert filter.
+
+    An invalid pattern (shouldn't happen — input is validated on entry) must
+    not silently swallow alerts, so it counts as a match.
+    """
+    try:
+        return re.search(pattern, diff) is not None
+    except re.error:
+        return True
 
 
 def build_payload(fmt: str, event: dict[str, Any]) -> dict[str, Any]:
@@ -171,6 +186,10 @@ class AlertManager:
         elif kind == "error":
             subject = f"[PageWatch] Check failed: {name}"
             body = f"Check failed for '{name}'\n\nURL: {url}\nError: {event.get('error', '?')}\nTime: {event.get('timestamp', '?')}\n"
+        elif kind == "recovery":
+            subject = f"[PageWatch] Recovered: {name}"
+            body = (f"'{name}' recovered after {event.get('recovered_after') or '?'} consecutive errors.\n\n"
+                    f"URL: {url}\nTime: {event.get('timestamp', '?')}\n")
         else:
             subject = "[PageWatch] Test notification"
             body = "This is a test notification from PageWatch. Your email alerts are working."
@@ -251,15 +270,52 @@ class AlertManager:
 
     # -- dispatch ------------------------------------------------------------
 
-    def dispatch(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def dispatch(self, results: list[dict[str, Any]],
+                 watches: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        """Send alerts for check results.
+
+        Without ``watches`` (a name → watch mapping) this keeps the legacy
+        behavior: every change and every error alerts. With ``watches`` the
+        per-watch ``alert_filter`` regex and the global ``error_threshold``
+        config apply: a change alerts only when the diff matches the filter
+        (otherwise the result is marked ``alert_suppressed``), and an error
+        alerts only when the consecutive-error count exactly reaches the
+        threshold. A watch that recovers after an alerted error emits a
+        one-shot "recovery" event (delivered to ``events=all`` channels and
+        email).
+        """
+        threshold = 1
+        if watches is not None:
+            try:
+                threshold = max(1, int(self._store.load_config().get("error_threshold", 1)))
+            except (TypeError, ValueError):
+                threshold = 1
+
         deliveries: list[dict[str, Any]] = []
         for result in results:
             if result.get("paused"):
                 continue
+            watch = (watches or {}).get(result.get("name")) or {}
             if result.get("changed"):
                 kind = "change"
+                if watches is not None:
+                    pattern = watch.get("alert_filter")
+                    if pattern and not _filter_matches(pattern, result.get("diff") or ""):
+                        result["alert_suppressed"] = True
+                        continue
             elif result.get("error"):
                 kind = "error"
+                if watches is not None:
+                    consecutive = result.get("consecutive_errors")
+                    if consecutive is None:
+                        consecutive = watch.get("consecutive_errors") or 1
+                    if consecutive != threshold:
+                        continue
+                    # Remember the alert went out so a later successful check
+                    # can emit exactly one recovery event.
+                    self._store.update_watch(result.get("name"), error_alerted=True)
+            elif watches is not None and result.get("error_recovered"):
+                kind = "recovery"
             else:
                 continue
 
@@ -273,8 +329,10 @@ class AlertManager:
                 diff = result.get("diff") or ""
                 event["diff_preview"] = diff[:DIFF_PREVIEW_CHARS] if diff else None
                 event["content_hash"] = result.get("current_hash")
-            else:
+            elif kind == "error":
                 event["error"] = result.get("error")
+            else:
+                event["recovered_after"] = result.get("recovered_after")
 
             for channel in self.channels_for(kind):
                 d = self._post(channel, event)

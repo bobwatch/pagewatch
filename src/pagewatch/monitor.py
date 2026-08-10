@@ -83,25 +83,35 @@ class Monitor:
             watch["last_checked"] = result["timestamp"]
             watch["check_count"] = (watch.get("check_count") or 0) + 1
             watch["last_status"] = "ok"
-            self._store.update_watch(
-                name,
-                last_hash=new_hash,
-                last_checked=result["timestamp"],
-                check_count=watch["check_count"],
-                last_status="ok",
-            )
+            result["consecutive_errors"] = 0
+            updates = {
+                "last_hash": new_hash,
+                "last_checked": result["timestamp"],
+                "check_count": watch["check_count"],
+                "last_status": "ok",
+                "consecutive_errors": 0,
+            }
+            if watch.get("error_alerted"):
+                # The watch had fired an error alert and now succeeds again —
+                # flag the recovery so the alert layer can notify once.
+                result["error_recovered"] = True
+                result["recovered_after"] = watch.get("consecutive_errors") or 0
+                updates["error_alerted"] = False
+            self._store.update_watch(name, **updates)
 
         except (OSError, ValueError, RuntimeError, SelectorSyntaxError) as exc:
             result["error"] = str(exc)
             watch["error_count"] = (watch.get("error_count") or 0) + 1
             watch["check_count"] = (watch.get("check_count") or 0) + 1
             watch["last_status"] = "error"
+            result["consecutive_errors"] = (watch.get("consecutive_errors") or 0) + 1
             self._store.update_watch(
                 name,
                 last_checked=result["timestamp"],
                 error_count=watch["error_count"],
                 check_count=watch["check_count"],
                 last_status="error",
+                consecutive_errors=result["consecutive_errors"],
             )
 
         return result

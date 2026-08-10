@@ -9,15 +9,15 @@ database, same storage the CLI uses.
 Endpoints (all JSON):
     GET    /api/status
     GET    /api/watches
-    POST   /api/watches                {url, name?, selector?, interval?, ignore_patterns?, render?, check_now?}
-    PATCH  /api/watches/{name}         {url?, selector?, interval?, ignore_patterns?, render?}
+    POST   /api/watches                {url, name?, selector?, interval?, ignore_patterns?, render?, alert_filter?, check_now?}
+    PATCH  /api/watches/{name}         {url?, selector?, interval?, ignore_patterns?, render?, alert_filter?}
     DELETE /api/watches/{name}
     POST   /api/watches/{name}/check   {alerts?: true}
     GET    /api/watches/{name}/history?limit=N
     GET    /api/watches/{name}/diff
     POST   /api/check                  {alerts?: true}
     GET    /api/config
-    PUT    /api/config                 {interval?, proxy?, retries?}
+    PUT    /api/config                 {interval?, proxy?, retries?, error_threshold?}
     GET    /api/alerts
     POST   /api/alerts                 {url, name?, format?, events?}
     DELETE /api/alerts/{name}
@@ -182,6 +182,15 @@ def _validate_import_watch(entry: Any) -> list[str]:
     render = entry.get("render")
     if render is not None and not isinstance(render, bool):
         errors.append("render: must be a boolean")
+    alert_filter = entry.get("alert_filter")
+    if alert_filter is not None:
+        if not isinstance(alert_filter, str):
+            errors.append("alert_filter: must be a string or null")
+        else:
+            try:
+                re.compile(alert_filter)
+            except re.error as exc:
+                errors.append(f"alert_filter: invalid regex ({exc})")
     selector = entry.get("selector")
     if selector:
         try:
@@ -265,7 +274,7 @@ class PagewatchServer(ThreadingHTTPServer):
             monitor = self.monitor_factory()
             result = monitor.check_one(w)
             am = self.alert_manager_factory()
-            am.dispatch([result])
+            am.dispatch([result], watches={w["name"]: w})
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -427,6 +436,21 @@ class RequestHandler(BaseHTTPRequestHandler):
                 raise ApiError(400, f"Invalid regex '{pattern}': {exc}")
         return list(patterns)
 
+    @staticmethod
+    def _validate_alert_filter(value) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ApiError(400, "alert_filter must be a string or null.")
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise ApiError(400, f"Invalid alert_filter regex: {exc}")
+        return value
+
     # -- handlers --------------------------------------------------------------
 
     def h_status(self, query=None):
@@ -480,6 +504,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         render = body.get("render", False)
         if not isinstance(render, bool):
             raise ApiError(400, "render must be a boolean.")
+        alert_filter = self._validate_alert_filter(body.get("alert_filter"))
 
         with self.server.write_lock:
             if self.server.storage.get_watch(name):
@@ -487,6 +512,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             watch = self.server.storage.add_watch(
                 name=name, url=url, selector=selector, interval=interval,
                 ignore_patterns=patterns, tags=tags, headers=headers, render=render,
+                alert_filter=alert_filter,
             )
 
         payload = {"watch": watch}
@@ -531,10 +557,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                     # Rendered and static content differ hugely — reset the
                     # baseline so the toggle does not fire a false alert.
                     reset_baseline = True
+            if "alert_filter" in body:
+                # Filtering only gates alerting, not detection — no baseline reset.
+                changes["alert_filter"] = self._validate_alert_filter(body["alert_filter"])
 
             if not changes:
                 raise ApiError(400, "No editable fields in request "
-                                    "(url, selector, interval, ignore_patterns, tags, headers, render).")
+                                    "(url, selector, interval, ignore_patterns, tags, headers, render, alert_filter).")
             if reset_baseline:
                 changes["last_hash"] = None
             updated = self.server.storage.update_watch(watch["name"], **changes)
@@ -580,7 +609,8 @@ class RequestHandler(BaseHTTPRequestHandler):
         results = [monitor.check_one(w) for w in watches]
         deliveries = []
         if with_alerts:
-            deliveries = self.server.alert_manager_factory().dispatch(results)
+            by_name = {w["name"]: w for w in watches}
+            deliveries = self.server.alert_manager_factory().dispatch(results, watches=by_name)
         return {"results": results, "alerts": deliveries}
 
     def h_check_one(self, name, query=None):
@@ -639,7 +669,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def h_put_config(self, query=None):
         body = self._read_json()
-        allowed = {"interval", "proxy", "retries"}
+        allowed = {"interval", "proxy", "retries", "error_threshold"}
         unknown = set(body) - allowed
         if unknown:
             raise ApiError(400, f"Unknown config keys: {', '.join(sorted(unknown))}. "
@@ -648,6 +678,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             config = self.server.storage.load_config()
             if "interval" in body:
                 config["interval"] = self._validate_interval(body["interval"])
+            if "error_threshold" in body:
+                threshold = body["error_threshold"]
+                if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold <= 0:
+                    raise ApiError(400, "error_threshold must be a positive integer.")
+                config["error_threshold"] = threshold
             if "retries" in body:
                 try:
                     retries = int(body["retries"])
