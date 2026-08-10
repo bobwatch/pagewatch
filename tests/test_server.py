@@ -139,6 +139,49 @@ def test_add_with_check_now():
         assert body["watch"]["last_hash"] == body["result"]["current_hash"]
 
 
+def test_add_update_render_field():
+    with running_server() as (base, store, _session):
+        # create with render enabled; defaults to False when omitted
+        r = requests.post(f"{base}/api/watches", json={"url": "x.test", "name": "t1", "render": True}, timeout=5)
+        assert r.status_code == 201
+        assert r.json()["watch"]["render"] is True
+        r = requests.post(f"{base}/api/watches", json={"url": "y.test", "name": "t2"}, timeout=5)
+        assert r.json()["watch"]["render"] is False
+
+        # render must be a real boolean (1 / "yes" rejected)
+        r = requests.post(f"{base}/api/watches", json={"url": "z.test", "render": "yes"}, timeout=5)
+        assert r.status_code == 400
+        r = requests.patch(f"{base}/api/watches/t1", json={"render": 1}, timeout=5)
+        assert r.status_code == 400
+
+        # re-applying the same value keeps the baseline
+        store.update_watch("t1", last_hash="somehash")
+        r = requests.patch(f"{base}/api/watches/t1", json={"render": True}, timeout=5)
+        assert r.status_code == 200
+        assert r.json()["baseline_reset"] is False
+        assert store.get_watch("t1")["last_hash"] == "somehash"
+
+        # toggling render resets the baseline (rendered vs static content differ hugely)
+        r = requests.patch(f"{base}/api/watches/t1", json={"render": False}, timeout=5)
+        assert r.status_code == 200
+        assert r.json()["baseline_reset"] is True
+        assert store.get_watch("t1")["render"] is False
+        assert store.get_watch("t1")["last_hash"] is None
+
+
+def test_import_render_must_be_bool():
+    with running_server() as (base, store, _session):
+        r = requests.post(f"{base}/api/import", json={
+            "watches": [{"name": "w", "url": "https://x.test", "render": "yes"}]}, timeout=5)
+        assert r.status_code == 400
+        assert store.load_watches() == []
+
+        r = requests.post(f"{base}/api/import", json={
+            "watches": [{"name": "w", "url": "https://x.test", "render": True}]}, timeout=5)
+        assert r.status_code == 200
+        assert store.get_watch("w")["render"] is True
+
+
 def test_check_flow_with_alerts():
     with running_server(PAGE_V1, PAGE_V2) as (base, _store, session):
         requests.post(f"{base}/api/watches", json={"url": "x.test", "name": "t1"}, timeout=5)

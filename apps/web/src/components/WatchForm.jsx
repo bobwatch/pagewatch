@@ -30,6 +30,7 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
     Object.entries(watch?.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n")
   );
   const [checkNow, setCheckNow] = useState(false);
+  const [render, setRender] = useState(Boolean(watch?.render));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [urlError, setUrlError] = useState(null);
@@ -59,6 +60,7 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
         selector: selector || undefined,
         interval: Number(interval),
         ignore_patterns: parsePatterns(patternsText),
+        render,
         tags: tagsText.split(",").map((t) => t.trim()).filter(Boolean),
         headers: Object.fromEntries(
           headersText.split("\n").filter(Boolean).map((line) => {
@@ -123,6 +125,14 @@ export default function WatchForm({ watch, toast, onDone, onCancel }) {
         <label htmlFor="wf-headers">Custom headers (Key: Value, one per line)</label>
         <textarea id="wf-headers" rows="2" placeholder="Authorization: Bearer token123"
                   value={headersText} onChange={(e) => setHeadersText(e.target.value)} />
+
+        <label className="check-label">
+          <input type="checkbox" checked={render} onChange={(e) => setRender(e.target.checked)} />
+          Render JavaScript
+          <span style={{ color: "var(--muted)", fontSize: "12px" }}>
+            (requires Playwright: pip install pagewatch[render])
+          </span>
+        </label>
 
         {!isEdit && (
           <label className="check-label">

@@ -262,6 +262,61 @@ def test_update_watch_fields_and_baseline_reset():
         assert "Nothing to update" in result.output
 
 
+def test_add_render_flag_is_stored():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        result = invoke(["add", "https://x.test", "--name", "t1", "--render"], home)
+        assert result.exit_code == 0
+        assert "JS" in result.output
+        assert storage.get_watch("t1")["render"] is True
+
+        result = invoke(["add", "https://y.test", "--name", "t2"], home)
+        assert result.exit_code == 0
+        assert storage.get_watch("t2")["render"] is False
+
+
+def test_update_render_toggle_resets_baseline():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        invoke(["add", "https://x.test", "--name", "t1"], home)
+        with patched(monitor=Monitor(storage=storage, fetcher=StaticFetcher(PAGE_V1))):
+            invoke(["check", "--no-alerts"], home)
+        assert storage.get_watch("t1")["last_hash"] is not None
+
+        result = invoke(["update", "t1", "--render"], home)
+        assert result.exit_code == 0
+        assert "Baseline reset" in result.output
+        w = storage.get_watch("t1")
+        assert w["render"] is True
+        assert w["last_hash"] is None  # rendered content differs hugely — old baseline is invalid
+
+        # Re-applying the same value is not a toggle: baseline stays.
+        rendered_monitor = Monitor(storage=storage, fetcher=StaticFetcher(PAGE_V1),
+                                   render_fetcher=StaticFetcher(PAGE_V1))
+        with patched(monitor=rendered_monitor):
+            invoke(["check", "--no-alerts"], home)
+        result = invoke(["update", "t1", "--render"], home)
+        assert result.exit_code == 0
+        assert "Baseline reset" not in result.output
+        assert storage.get_watch("t1")["last_hash"] is not None
+
+        result = invoke(["update", "t1", "--no-render"], home)
+        assert result.exit_code == 0
+        assert "Baseline reset" in result.output
+        w = storage.get_watch("t1")
+        assert w["render"] is False
+        assert w["last_hash"] is None
+
+
+def test_clone_preserves_render():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        invoke(["add", "https://x.test", "--name", "t1", "--render"], home)
+        result = invoke(["clone", "t1", "--new-name", "t2"], home)
+        assert result.exit_code == 0
+        assert storage.get_watch("t2")["render"] is True
+
+
 def test_config_set_and_validation():
     with tempfile.TemporaryDirectory() as home:
         storage = Storage(Path(home))

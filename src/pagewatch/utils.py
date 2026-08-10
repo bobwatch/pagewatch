@@ -89,6 +89,45 @@ def fetch_page(
     raise last_exc
 
 
+def fetch_page_rendered(
+    url: str,
+    timeout: int = 30,
+    extra_headers: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    """Fetch a page with a headless Chromium (Playwright), returning the rendered HTML.
+
+    Playwright is an optional dependency (``pip install pagewatch[render]``).
+    All browser errors are wrapped in RuntimeError so callers monitoring
+    daemons are not killed by unexpected playwright exception types.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError(
+            "Playwright is required for --render. "
+            "Install with: pip install pagewatch[render] && playwright install chromium"
+        ) from exc
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                page = browser.new_page(extra_http_headers=extra_headers or None)
+                try:
+                    page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
+                except Exception:  # noqa: BLE001 — any playwright failure retries with a plain load
+                    # networkidle can time out on pages with long-lived
+                    # connections (analytics, websockets) — fall back to load.
+                    page.goto(url, timeout=timeout * 1000, wait_until="load")
+                return page.content(), url
+            finally:
+                browser.close()
+    except RuntimeError:
+        raise
+    except Exception as exc:  # playwright errors must not kill the check daemon
+        raise RuntimeError(f"Rendered fetch failed for {url}: {exc}") from exc
+
+
 def extract_text(html: str, selector: str | None = None) -> str:
     soup = BeautifulSoup(html, "html.parser")
     if selector:

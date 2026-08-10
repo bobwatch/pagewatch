@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 
 import requests
@@ -10,6 +11,7 @@ from pagewatch.utils import (
     data_dir,
     extract_text,
     fetch_page,
+    fetch_page_rendered,
     is_valid_url,
     normalize_url,
     validate_selector,
@@ -195,3 +197,78 @@ def test_fetch_page_passes_proxy():
     getter = FlakyGetter()
     fetch_page("https://x.test", proxy="http://127.0.0.1:8888", retries=0, backoff=0, getter=getter)
     assert getter.last_proxies == {"http": "http://127.0.0.1:8888", "https": "http://127.0.0.1:8888"}
+
+
+# -- fetch_page_rendered (Playwright backend, mocked — no real browser) ------
+
+
+class _FakePlaywrightCM:
+    def __init__(self, pw):
+        self._pw = pw
+
+    def __enter__(self):
+        return self._pw
+
+    def __exit__(self, *args):
+        return False
+
+
+def _install_fake_playwright(monkeypatch, html="<html>rendered</html>", goto_exc=None):
+    """Register a fake ``playwright.sync_api`` module; returns a state dict for assertions."""
+    import types
+
+    state = {"closed": False, "headers": None, "waits": []}
+
+    def goto(url, timeout=None, wait_until=None):
+        state["waits"].append(wait_until)
+        if goto_exc is not None:
+            raise goto_exc
+
+    def new_page(extra_http_headers=None):
+        state["headers"] = extra_http_headers
+        return types.SimpleNamespace(goto=goto, content=lambda: html)
+
+    def close():
+        state["closed"] = True
+
+    browser = types.SimpleNamespace(new_page=new_page, close=close)
+    pw = types.SimpleNamespace(chromium=types.SimpleNamespace(launch=lambda headless=True: browser))
+
+    sync_mod = types.ModuleType("playwright.sync_api")
+    sync_mod.sync_playwright = lambda: _FakePlaywrightCM(pw)
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_mod)
+    return state
+
+
+def test_fetch_page_rendered_without_playwright_gives_install_hint(monkeypatch):
+    # sys.modules entry of None makes any import of the package raise ImportError.
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
+    try:
+        fetch_page_rendered("https://x.test")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "pip install pagewatch[render]" in str(exc)
+
+
+def test_fetch_page_rendered_returns_content_and_closes_browser(monkeypatch):
+    state = _install_fake_playwright(monkeypatch, html="<html>rendered</html>")
+    text, url = fetch_page_rendered("https://x.test", extra_headers={"X-Test": "1"})
+    assert text == "<html>rendered</html>"
+    assert url == "https://x.test"
+    assert state["headers"] == {"X-Test": "1"}
+    assert state["closed"] is True  # browser closed even on the happy path
+
+
+def test_fetch_page_rendered_wraps_playwright_errors(monkeypatch):
+    class FakePlaywrightTimeout(Exception):
+        pass
+
+    state = _install_fake_playwright(monkeypatch, goto_exc=FakePlaywrightTimeout("timeout 30000ms exceeded"))
+    try:
+        fetch_page_rendered("https://x.test")
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "timeout 30000ms exceeded" in str(exc)
+    assert state["closed"] is True  # browser closed despite the failure

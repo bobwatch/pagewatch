@@ -154,6 +154,50 @@ def test_paused_watch_is_skipped():
         assert result["error"] is None
 
 
+def test_render_watch_uses_render_fetcher():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage(Path(tmp))
+        static = SeqFetcher(PAGE_V1)
+        rendered = SeqFetcher(PAGE_V2)
+        monitor = Monitor(storage=store, fetcher=static, render_fetcher=rendered)
+        store.add_watch("w", "https://x.test", render=True)
+        result = monitor.check_one(store.get_watch("w"))
+        assert result["error"] is None
+        assert rendered.calls == 1
+        assert static.calls == 0
+        assert store.load_snapshot("w")["latest"]["full_text"] == "version two"
+
+
+def test_non_render_watch_uses_default_fetcher():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage(Path(tmp))
+        static = SeqFetcher(PAGE_V1)
+        rendered = SeqFetcher(PAGE_V2)
+        monitor = Monitor(storage=store, fetcher=static, render_fetcher=rendered)
+        store.add_watch("w", "https://x.test")  # render defaults to False
+        result = monitor.check_one(store.get_watch("w"))
+        assert result["error"] is None
+        assert static.calls == 1
+        assert rendered.calls == 0
+
+
+def test_watch_without_render_key_uses_default_fetcher():
+    # Watches written by older versions have no 'render' key at all.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage(Path(tmp))
+        static = SeqFetcher(PAGE_V1)
+        rendered = SeqFetcher(PAGE_V2)
+        monitor = Monitor(storage=store, fetcher=static, render_fetcher=rendered)
+        store.add_watch("w", "https://x.test")
+        watches = store.load_watches()
+        del watches[0]["render"]
+        store.save_watches(watches)
+        result = monitor.check_one(store.get_watch("w"))
+        assert result["error"] is None
+        assert static.calls == 1
+        assert rendered.calls == 0
+
+
 def test_check_updates_stats():
     with env(PAGE_V1, PAGE_V2) as (store, monitor):
         store.add_watch("w", "https://x.test")

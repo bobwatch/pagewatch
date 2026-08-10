@@ -233,7 +233,10 @@ export default function WatchList({ toast, onDataChanged }) {
                     <tr key={watch.name} className={watch.paused ? "row-muted" : ""}>
                       <td><input type="checkbox" checked={selected.has(watch.name)}
                                  onChange={() => toggleSelect(watch.name)} /></td>
-                      <td className="cell-name">{watch.name}</td>
+                      <td className="cell-name">
+                        {watch.name}
+                        {watch.render && <Badge tone="muted" title="Rendered with Playwright (JS)">JS</Badge>}
+                      </td>
                       <td className="cell-url">
                         <a href={watch.url} target="_blank" rel="noreferrer" title={watch.url}>
                           {watch.url}

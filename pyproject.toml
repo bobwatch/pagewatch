@@ -47,6 +47,7 @@ Issues = "https://github.com/bobwatch/pagewatch/issues"
 
 [project.optional-dependencies]
 selenium = ["selenium>=4.15"]
+render = ["playwright>=1.40"]
 dev = ["pytest>=8", "pytest-cov", "ruff"]
 
 [project.scripts]

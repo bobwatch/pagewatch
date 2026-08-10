@@ -9,8 +9,8 @@ database, same storage the CLI uses.
 Endpoints (all JSON):
     GET    /api/status
     GET    /api/watches
-    POST   /api/watches                {url, name?, selector?, interval?, ignore_patterns?, check_now?}
-    PATCH  /api/watches/{name}         {url?, selector?, interval?, ignore_patterns?}
+    POST   /api/watches                {url, name?, selector?, interval?, ignore_patterns?, render?, check_now?}
+    PATCH  /api/watches/{name}         {url?, selector?, interval?, ignore_patterns?, render?}
     DELETE /api/watches/{name}
     POST   /api/watches/{name}/check   {alerts?: true}
     GET    /api/watches/{name}/history?limit=N
@@ -179,6 +179,9 @@ def _validate_import_watch(entry: Any) -> list[str]:
         or not all(isinstance(k, str) and isinstance(v, str) for k, v in headers.items())
     ):
         errors.append("headers: must be an object mapping strings to strings")
+    render = entry.get("render")
+    if render is not None and not isinstance(render, bool):
+        errors.append("render: must be a boolean")
     selector = entry.get("selector")
     if selector:
         try:
@@ -474,13 +477,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         selector = body.get("selector") or None
         tags = body.get("tags") or []
         headers = body.get("headers") or {}
+        render = body.get("render", False)
+        if not isinstance(render, bool):
+            raise ApiError(400, "render must be a boolean.")
 
         with self.server.write_lock:
             if self.server.storage.get_watch(name):
                 raise ApiError(409, f"A watch named '{name}' already exists.")
             watch = self.server.storage.add_watch(
                 name=name, url=url, selector=selector, interval=interval,
-                ignore_patterns=patterns, tags=tags, headers=headers,
+                ignore_patterns=patterns, tags=tags, headers=headers, render=render,
             )
 
         payload = {"watch": watch}
@@ -516,10 +522,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             if "headers" in body:
                 changes["headers"] = dict(body["headers"])
                 reset_baseline = True
+            if "render" in body:
+                render = body["render"]
+                if not isinstance(render, bool):
+                    raise ApiError(400, "render must be a boolean.")
+                changes["render"] = render
+                if render != bool(watch.get("render")):
+                    # Rendered and static content differ hugely — reset the
+                    # baseline so the toggle does not fire a false alert.
+                    reset_baseline = True
 
             if not changes:
                 raise ApiError(400, "No editable fields in request "
-                                    "(url, selector, interval, ignore_patterns, tags, headers).")
+                                    "(url, selector, interval, ignore_patterns, tags, headers, render).")
             if reset_baseline:
                 changes["last_hash"] = None
             updated = self.server.storage.update_watch(watch["name"], **changes)
@@ -556,6 +571,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 ignore_patterns=list(watch.get("ignore_patterns") or []),
                 tags=list(watch.get("tags") or []),
                 headers=dict(watch.get("headers") or {}),
+                render=watch.get("render", False),
             )
         self._send_json(201, {"watch": cloned})
 

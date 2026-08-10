@@ -106,7 +106,8 @@ def init():
 @click.option("--ignore", "ignore", multiple=True,
               help="Regex: matching text lines are ignored (repeatable). Great for timestamps/counters.")
 @click.option("--check-now", is_flag=True, help="Fetch immediately to establish the baseline")
-def add(url, name, selector, interval, ignore, check_now):
+@click.option("--render", is_flag=True, help="Render the page with headless Chromium (requires pagewatch[render])")
+def add(url, name, selector, interval, ignore, check_now, render):
     url = normalize_url(url)
     if not is_valid_url(url):
         console.print(f"[red]Error: Invalid URL '{url}'[/]")
@@ -143,7 +144,7 @@ def add(url, name, selector, interval, ignore, check_now):
 
     try:
         watch = storage.add_watch(name=name, url=url, selector=selector, interval=interval,
-                                  ignore_patterns=list(ignore))
+                                  ignore_patterns=list(ignore), render=render)
     except ValueError as exc:
         console.print(f"[red]Error: {exc}[/]")
         sys.exit(1)
@@ -152,6 +153,8 @@ def add(url, name, selector, interval, ignore, check_now):
     if selector:
         console.print(f"  Selector: {selector}")
     console.print(f"  Interval: {interval}s")
+    if render:
+        console.print("  Render:   JS (Playwright)")
     if ignore:
         console.print(f"  Ignoring: {len(ignore)} pattern(s)")
 
@@ -173,7 +176,9 @@ def add(url, name, selector, interval, ignore, check_now):
 @click.option("--remove-ignore", multiple=True, help="Remove an ignore regex (repeatable)")
 @click.option("--clear-ignore", is_flag=True, help="Remove all ignore patterns")
 @click.option("--pause/--resume", default=None, help="Pause or resume this watch")
-def update(name, url, selector, clear_selector, interval, add_ignore, remove_ignore, clear_ignore, pause):
+@click.option("--render/--no-render", default=None,
+              help="Enable/disable JS rendering via headless Chromium (resets the baseline)")
+def update(name, url, selector, clear_selector, interval, add_ignore, remove_ignore, clear_ignore, pause, render):
     """Modify an existing watch (URL, selector, interval, ignore patterns)."""
     storage = get_storage()
     watch = storage.get_watch(name)
@@ -232,6 +237,13 @@ def update(name, url, selector, clear_selector, interval, add_ignore, remove_ign
 
     if pause is not None:
         changes["paused"] = pause
+
+    if render is not None:
+        changes["render"] = render
+        if bool(render) != bool(watch.get("render")):
+            # Rendered and static content differ hugely — keep the old
+            # baseline and the next check would fire a false alert.
+            reset_baseline = True
 
     if not changes:
         console.print("[yellow]Nothing to update. See 'pagewatch update --help' for options.[/]")
@@ -295,6 +307,8 @@ def list_watches(search, tag, status):
             status = "[green]active[/]"
         else:
             status = "[yellow]pending[/]"
+        if w.get("render"):
+            status += " [cyan]JS[/]"
         n_ignores = len(w.get("ignore_patterns") or [])
         table.add_row(
             w["name"],
@@ -996,6 +1010,7 @@ def clone(name, new_name):
         paused=watch.get("paused", False),
         tags=list(watch.get("tags") or []),
         headers=dict(watch.get("headers") or {}),
+        render=watch.get("render", False),
     )
     console.print(f"[green]Cloned watch:[/] {name} → {new_name}")
     console.print(f"  URL:      {cloned['url']}")

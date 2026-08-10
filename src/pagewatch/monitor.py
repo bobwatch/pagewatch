@@ -5,11 +5,12 @@ from datetime import datetime, timezone
 from soupsieve import SelectorSyntaxError
 
 from .storage import Storage
-from .utils import apply_ignore_patterns, compute_diff, content_hash, extract_text, fetch_page
+from .utils import apply_ignore_patterns, compute_diff, content_hash, extract_text, fetch_page, fetch_page_rendered
 
 
 class Monitor:
-    def __init__(self, storage: Storage | None = None, fetcher: Callable[[str], tuple[str, str]] | None = None):
+    def __init__(self, storage: Storage | None = None, fetcher: Callable[[str], tuple[str, str]] | None = None,
+                 render_fetcher: Callable[[str], tuple[str, str]] | None = None):
         self._store = storage or Storage()
         if fetcher is None:
             config = self._store.load_config()
@@ -19,6 +20,7 @@ class Monitor:
                 retries = 2
             fetcher = functools.partial(fetch_page, proxy=config.get("proxy") or None, retries=retries)
         self._fetch = fetcher
+        self._render_fetch = render_fetcher or fetch_page_rendered
 
     def check_all(self) -> list[dict]:
         watches = self._store.load_watches()
@@ -59,7 +61,8 @@ class Monitor:
         }
 
         try:
-            html, _ = self._fetch(url, extra_headers=extra_headers)
+            fetch = self._render_fetch if watch.get("render") else self._fetch
+            html, _ = fetch(url, extra_headers=extra_headers)
             text = extract_text(html, selector)
             text = apply_ignore_patterns(text, watch.get("ignore_patterns"))
             new_hash = content_hash(text)

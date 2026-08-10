@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **JS-rendered page monitoring**: `pagewatch add --render` (and
+  `pagewatch update --render/--no-render`) fetches pages with headless
+  Chromium via the optional Playwright backend
+  (`pip install pagewatch[render] && playwright install chromium`).
+  Toggling rendering resets the baseline to avoid false alerts; rendered
+  watches show a `JS` marker in `pagewatch list`. The REST API
+  (`POST/PATCH /api/watches`, `/api/import`) accepts a boolean `render`
+  field, and the dashboard form has a "Render JavaScript" checkbox.
+
 ## 0.5.1 — 2026-08-10
 
 ### Security

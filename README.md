@@ -39,6 +39,7 @@
 - **Webhook Alerts** — Push change/error notifications to Slack, Discord, Feishu, DingTalk, or any JSON endpoint
 - **Daemon Mode** — `pagewatch watch` keeps checking continuously, honoring each page's interval
 - **Resilient Fetching** — Automatic retries with exponential backoff, optional HTTP(S) proxy
+- **JS-Rendered Pages** — Optional Playwright backend renders JavaScript-heavy pages in headless Chromium
 - **Scripting-Ready** — `--json` output and `--fail-on-change` exit codes plug straight into cron and CI
 - **Backup & Restore** — Export watches and change history as JSON/CSV, re-import with one command
 - **JSON Storage** — All data stored locally, easy to inspect and export
@@ -119,6 +120,24 @@ pagewatch add https://docs.example.com/api --name api-docs --interval 1800
 ```bash
 pagewatch add https://news.ycombinator.com --name hn-headlines --selector ".titleline"
 ```
+
+### Monitor a JS-rendered page
+
+Single-page apps and other JavaScript-heavy sites return an empty shell to a
+plain HTTP fetch. Enable the optional Playwright backend to render the page in
+headless Chromium before extracting text:
+
+```bash
+pip install "pagewatch[render]"
+playwright install chromium
+
+pagewatch add https://spa.example.com/dashboard --name spa-dash --render
+
+# Toggle rendering on an existing watch (resets the baseline)
+pagewatch update spa-dash --render        # or --no-render
+```
+
+Rendered watches show a `JS` marker in `pagewatch list` and in the dashboard.
 
 ### Check all watched pages
 

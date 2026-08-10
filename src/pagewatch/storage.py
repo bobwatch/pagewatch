@@ -104,6 +104,7 @@ class Storage:
         paused: bool = False,
         tags: list[str] | None = None,
         headers: dict[str, str] | None = None,
+        render: bool = False,
     ) -> dict[str, Any]:
         name = _validate_name(name)
         with self._lock:
@@ -117,6 +118,7 @@ class Storage:
                 "tags": list(tags or []),
                 "headers": dict(headers or {}),
                 "paused": paused,
+                "render": bool(render),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "last_checked": None,
                 "last_hash": None,
