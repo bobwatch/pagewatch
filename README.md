@@ -255,6 +255,11 @@ pagewatch export --format csv -o history.csv
 # Restore on another machine (merge by default, --replace to overwrite;
 # invalid entries are validated, skipped, and reported)
 pagewatch import backup.json
+
+# Migrate from another monitoring tool (same merge/validate rules apply;
+# entries pagewatch cannot express, e.g. XPath filters, are skipped with a warning)
+pagewatch import changedetection-export.json --from changedetection
+pagewatch import distill-export.json --from distill
 ```
 
 ### Proxy & retries

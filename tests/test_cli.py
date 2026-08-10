@@ -795,3 +795,88 @@ def test_feed_command_empty_history_still_valid():
         assert result.exit_code == 0
         doc = minidom.parseString(result.output)
         assert doc.getElementsByTagName("item") == []
+
+
+def test_import_from_changedetection():
+    with tempfile.TemporaryDirectory() as home:
+        export = Path(home) / "cd.json"
+        export.write_text(json.dumps({
+            "uuid-1": {
+                "url": "https://example.com/pricing",
+                "title": "Pricing page",
+                "tag": "saas",
+                "css_filter": "css:.price-block",
+                "time_between_check": {"hours": 2},
+            },
+            "uuid-2": {
+                "url": "https://news.example.com",
+                "title": "News",
+                "css_filter": "xpath://div[@id='ads']",
+            },
+        }), encoding="utf-8")
+
+        result = invoke(["import", str(export), "--from", "changedetection"], home)
+        assert result.exit_code == 0
+        assert "Imported 2 watch(es)" in result.output
+        assert "xpath" in result.output  # warning about the dropped xpath filter
+
+        storage = Storage(Path(home))
+        w = storage.get_watch("Pricing page")
+        assert w is not None
+        assert w["url"] == "https://example.com/pricing"
+        assert w["selector"] == ".price-block"
+        assert w["interval"] == 7200
+        assert w["tags"] == ["saas"]
+        w2 = storage.get_watch("News")
+        assert w2 is not None
+        assert not w2.get("selector")
+
+        # Merging again skips the existing names.
+        result = invoke(["import", str(export), "--from", "changedetection"], home)
+        assert result.exit_code == 0
+        assert "Imported 0 watch(es)" in result.output
+        assert "skipped 2 existing" in result.output
+
+
+def test_import_from_distill():
+    with tempfile.TemporaryDirectory() as home:
+        export = Path(home) / "distill.json"
+        export.write_text(json.dumps({
+            "client": {"local": 1},
+            "data": [{
+                "name": "GPU Tracker",
+                "uri": "https://store.example.com/gpus",
+                "config": json.dumps({
+                    "selections": [{"frames": [{"includes": [{"expr": ".price", "type": "css"}]}]}],
+                }),
+                "schedule": json.dumps({"type": "INTERVAL", "params": {"interval": 284}}),
+                "tags": ["gpus"],
+            }],
+        }), encoding="utf-8")
+
+        result = invoke(["import", str(export), "--from", "distill"], home)
+        assert result.exit_code == 0
+        assert "Imported 1 watch(es)" in result.output
+
+        storage = Storage(Path(home))
+        w = storage.get_watch("GPU Tracker")
+        assert w is not None
+        assert w["url"] == "https://store.example.com/gpus"
+        assert w["selector"] == ".price"
+        assert w["interval"] == 284
+        assert w["tags"] == ["gpus"]
+
+
+def test_import_from_bad_option_or_file():
+    with tempfile.TemporaryDirectory() as home:
+        export = Path(home) / "cd.json"
+        export.write_text("{not json", encoding="utf-8")
+
+        # Unknown --from value is rejected by click.
+        result = invoke(["import", str(export), "--from", "visualping"], home)
+        assert result.exit_code != 0
+
+        # Unparseable export fails cleanly.
+        result = invoke(["import", str(export), "--from", "changedetection"], home)
+        assert result.exit_code == 1
+        assert "not a valid changedetection.io export" in result.output

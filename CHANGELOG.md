@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-08-11
 
 ### Added
 - **RSS feeds of detected changes**: `pagewatch feed [name]` prints an RSS 2.0
@@ -11,6 +11,12 @@
   written before this version have no diff and are simply skipped. When token
   auth is enabled, the feed endpoints accept `?token=<token>` in addition to
   the Bearer header, since feed readers cannot answer a token prompt.
+- **Import from changedetection.io and Distill.io**: `pagewatch import <file>
+  --from changedetection|distill` parses those tools' JSON exports into
+  watches (URL, title→name, CSS selector, check interval, tags) and feeds
+  them through the same per-entry validation and merge/replace logic as a
+  pagewatch backup. XPath/JSON filters that cannot be expressed as a CSS
+  selector are dropped with a warning.
 - **New alert channels**: Telegram Bot API (`--format telegram`, with the
   `chat_id` passed as a query parameter on the webhook URL), WeCom group
   bots (`--format wecom`), Gotify (`--format gotify`), and ntfy

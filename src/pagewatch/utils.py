@@ -24,6 +24,14 @@ def is_valid_url(url: str) -> bool:
     return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
 
 
+def default_watch_name(url: str) -> str:
+    """Derive a filesystem-safe watch name from a URL's host (incl. port)."""
+    host = urlparse(url).netloc.lower()
+    name = re.sub(r"[^a-z0-9-]+", "-", host)
+    name = re.sub(r"-{2,}", "-", name).strip("-")
+    return name or "watch"
+
+
 def validate_selector(selector: str) -> None:
     """Validate a CSS selector, raising ValueError if the syntax is invalid."""
     try:

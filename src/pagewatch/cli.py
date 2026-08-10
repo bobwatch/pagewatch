@@ -17,12 +17,13 @@ from rich.table import Table
 from . import __version__
 from .alerts import SUPPORTED_EVENTS, SUPPORTED_FORMATS, AlertManager
 from .feed import build_rss
+from .importers import IMPORTERS
 from .monitor import Monitor
 from .service import ServiceError
 from .service import install_service as svc_install
 from .service import uninstall_service as svc_uninstall
 from .storage import Storage, _validate_name
-from .utils import is_valid_url, normalize_url, validate_selector
+from .utils import default_watch_name, is_valid_url, normalize_url, validate_selector
 
 console = Console()
 
@@ -51,14 +52,6 @@ def get_monitor() -> Monitor:
 
 def get_alert_manager() -> AlertManager:
     return AlertManager()
-
-
-def _default_watch_name(url: str) -> str:
-    """Derive a filesystem-safe watch name from a URL's host (incl. port)."""
-    host = urlparse(url).netloc.lower()
-    name = re.sub(r"[^a-z0-9-]+", "-", host)
-    name = re.sub(r"-{2,}", "-", name).strip("-")
-    return name or "watch"
 
 
 def _mask_url(url: str) -> str:
@@ -152,7 +145,7 @@ def add(url, name, selector, interval, ignore, check_now, render, alert_filter):
             sys.exit(1)
 
     if not name:
-        name = _default_watch_name(url)
+        name = default_watch_name(url)
 
     _validate_patterns(ignore)
     if alert_filter:
@@ -624,19 +617,39 @@ def export(fmt, output, include_html):
 @cli.command("import")
 @click.argument("file", type=click.Path(exists=True, dir_okay=False))
 @click.option("--replace", is_flag=True, help="Replace the existing watch list instead of merging")
-def import_cmd(file, replace):
-    """Import watches and snapshots from a 'pagewatch export' JSON file."""
+@click.option("--from", "source", type=click.Choice(list(IMPORTERS)), default=None,
+              help="Import a competitor export (changedetection.io / Distill.io) instead of a pagewatch backup")
+def import_cmd(file, replace, source):
+    """Import watches (and snapshots) from a 'pagewatch export' JSON file.
+
+    With --from, import a changedetection.io or Distill.io export instead."""
     storage = get_storage()
     try:
-        data = json.loads(Path(file).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        text = Path(file).read_text(encoding="utf-8")
+    except OSError as exc:
         console.print(f"[red]Cannot read backup: {exc}[/]")
         sys.exit(1)
 
-    watches = data.get("watches") if isinstance(data, dict) else None
-    if not isinstance(watches, list):
-        console.print("[red]Invalid backup: missing 'watches' list.[/]")
-        sys.exit(1)
+    if source:
+        try:
+            watches, warnings = IMPORTERS[source](text)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/]")
+            sys.exit(1)
+        for warning in warnings:
+            console.print(f"[yellow]{warning}[/]")
+        snapshots = {}
+    else:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            console.print(f"[red]Cannot read backup: {exc}[/]")
+            sys.exit(1)
+        watches = data.get("watches") if isinstance(data, dict) else None
+        if not isinstance(watches, list):
+            console.print("[red]Invalid backup: missing 'watches' list.[/]")
+            sys.exit(1)
+        snapshots = data.get("snapshots") or {}
 
     valid, invalid = [], 0
     for w in watches:
@@ -668,8 +681,6 @@ def import_cmd(file, replace):
             console.print(f"[yellow]Skipping watch '{name or '?'}': {problem}.[/]")
             continue
         valid.append(w)
-
-    snapshots = data.get("snapshots") or {}
 
     if replace:
         for w in storage.load_watches():
