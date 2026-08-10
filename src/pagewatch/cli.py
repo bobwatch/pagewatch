@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import copy
 import csv
 import io
 import json
@@ -7,17 +8,17 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 import click
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
 from .alerts import SUPPORTED_EVENTS, SUPPORTED_FORMATS, AlertManager
 from .monitor import Monitor
-from .storage import Storage
-from .utils import is_valid_url, normalize_url
+from .storage import Storage, _validate_name
+from .utils import is_valid_url, normalize_url, validate_selector
 
 console = Console()
 
@@ -36,16 +37,20 @@ def get_alert_manager() -> AlertManager:
     return AlertManager()
 
 
-def print_banner():
-    console.print()
-    console.print(
-        Panel.fit(
-            "[bold cyan]PageWatch[/] — Free & Open Source Website Change Monitor",
-            border_style="cyan",
-        )
-    )
-    console.print("[dim]For hosted monitoring with 50+ proxy regions, visual diffs, and team collaboration,[/]")
-    console.print("[dim]visit [link=https://pagewatch.tech]https://pagewatch.tech[/link][/]\n")
+def _default_watch_name(url: str) -> str:
+    """Derive a filesystem-safe watch name from a URL's host (incl. port)."""
+    host = urlparse(url).netloc.lower()
+    name = re.sub(r"[^a-z0-9-]+", "-", host)
+    name = re.sub(r"-{2,}", "-", name).strip("-")
+    return name or "watch"
+
+
+def _mask_url(url: str) -> str:
+    """Show only scheme://host of a webhook URL — the path often holds a secret token."""
+    parsed = urlparse(url or "")
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}/…"
+    return "(hidden)"
 
 
 def _print_deliveries(deliveries):
@@ -96,7 +101,8 @@ def init():
 @click.argument("url")
 @click.option("--name", "-n", help="Friendly name for this watch")
 @click.option("--selector", "-s", help="CSS selector to monitor a specific element")
-@click.option("--interval", "-i", type=int, default=3600, help="Check interval in seconds (default: 3600)")
+@click.option("--interval", "-i", type=int, default=None,
+              help="Check interval in seconds (default: config 'interval', fallback 3600)")
 @click.option("--ignore", "ignore", multiple=True,
               help="Regex: matching text lines are ignored (repeatable). Great for timestamps/counters.")
 @click.option("--check-now", is_flag=True, help="Fetch immediately to establish the baseline")
@@ -106,20 +112,41 @@ def add(url, name, selector, interval, ignore, check_now):
         console.print(f"[red]Error: Invalid URL '{url}'[/]")
         sys.exit(1)
 
+    storage = get_storage()
+
+    if interval is None:
+        try:
+            interval = int(storage.load_config().get("interval"))
+        except (TypeError, ValueError):
+            interval = 3600
+        if interval <= 0:
+            interval = 3600
+    elif interval <= 0:
+        console.print("[red]Error: interval must be a positive number of seconds.[/]")
+        sys.exit(1)
+
+    if selector:
+        try:
+            validate_selector(selector)
+        except ValueError as exc:
+            console.print(f"[red]Error: {exc}[/]")
+            sys.exit(1)
+
     if not name:
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        name = parsed.netloc.replace(".", "-")
+        name = _default_watch_name(url)
 
     _validate_patterns(ignore)
 
-    storage = get_storage()
     if storage.get_watch(name):
         console.print(f"[red]Error: A watch named '{name}' already exists.[/]")
         sys.exit(1)
 
-    watch = storage.add_watch(name=name, url=url, selector=selector, interval=interval,
-                              ignore_patterns=list(ignore))
+    try:
+        watch = storage.add_watch(name=name, url=url, selector=selector, interval=interval,
+                                  ignore_patterns=list(ignore))
+    except ValueError as exc:
+        console.print(f"[red]Error: {exc}[/]")
+        sys.exit(1)
     console.print(f"[green]Added watch:[/] {name}")
     console.print(f"  URL:      {url}")
     if selector:
@@ -165,10 +192,19 @@ def update(name, url, selector, clear_selector, interval, add_ignore, remove_ign
         changes["url"] = new_url
         reset_baseline = True
 
+    if clear_selector and selector is not None:
+        console.print("[red]Error: --selector and --clear-selector cannot be used together.[/]")
+        sys.exit(1)
+
     if clear_selector:
         changes["selector"] = None
         reset_baseline = True
     elif selector is not None:
+        try:
+            validate_selector(selector)
+        except ValueError as exc:
+            console.print(f"[red]Error: {exc}[/]")
+            sys.exit(1)
         changes["selector"] = selector
         reset_baseline = True
 
@@ -180,7 +216,8 @@ def update(name, url, selector, clear_selector, interval, add_ignore, remove_ign
 
     if clear_ignore or add_ignore or remove_ignore:
         _validate_patterns(add_ignore)
-        patterns = [] if clear_ignore else list(watch.get("ignore_patterns") or [])
+        old_patterns = list(watch.get("ignore_patterns") or [])
+        patterns = [] if clear_ignore else list(old_patterns)
         for pattern in remove_ignore:
             if pattern in patterns:
                 patterns.remove(pattern)
@@ -190,15 +227,13 @@ def update(name, url, selector, clear_selector, interval, add_ignore, remove_ign
             if pattern not in patterns:
                 patterns.append(pattern)
         changes["ignore_patterns"] = patterns
-        reset_baseline = True
+        if patterns != old_patterns:
+            reset_baseline = True
+
+    if pause is not None:
+        changes["paused"] = pause
 
     if not changes:
-        if pause is not None:
-            changes["paused"] = pause
-            storage.update_watch(name, **changes)
-            state = "paused" if pause else "resumed"
-            console.print(f"[green]{state.capitalize()} watch:[/] {name}")
-            return
         console.print("[yellow]Nothing to update. See 'pagewatch update --help' for options.[/]")
         return
 
@@ -254,6 +289,8 @@ def list_watches(search, tag, status):
         last = w.get("last_checked") or "Never"
         if w.get("paused"):
             status = "[yellow]paused[/]"
+        elif w.get("last_status") == "error":
+            status = "[red]error[/]"
         elif w.get("last_hash"):
             status = "[green]active[/]"
         else:
@@ -346,8 +383,7 @@ def watch(once, no_alerts):
     monitor = get_monitor()
     alert_manager = get_alert_manager()
 
-    watches = storage.load_watches()
-    if not watches:
+    if not storage.load_watches():
         console.print("[yellow]No watches configured. Use 'pagewatch add <url>' to add one.[/]")
         return
 
@@ -363,37 +399,55 @@ def watch(once, no_alerts):
         return max(now, ts + interval)
 
     now = time.time()
-    next_run = {w["name"]: next_due(w, now) for w in watches}
-    console.print(f"[bold cyan]PageWatch[/] watching {len(watches)} page(s). Press Ctrl+C to stop.")
+    next_run = {w["name"]: next_due(w, now) for w in storage.load_watches()}
+    console.print(f"[bold cyan]PageWatch[/] watching {len(next_run)} page(s). Press Ctrl+C to stop.")
 
     checked_any = False
     try:
         while True:
             now = time.time()
+            # Re-read the watch list every cycle so watches added or removed
+            # while the daemon runs are picked up.
+            watches = {w["name"]: w for w in storage.load_watches()}
+            for name in list(next_run):
+                if name not in watches:
+                    del next_run[name]
+            for name, w in watches.items():
+                if name not in next_run:
+                    next_run[name] = next_due(w, now)
+
             for name in [n for n, t in next_run.items() if t <= now]:
-                checked_any = True
-                w = storage.get_watch(name)
-                if w is None:
-                    next_run.pop(name, None)
-                    continue
-                result = monitor.check_one(w)
+                w = watches[name]
+                interval = int(w.get("interval") or 3600)
                 stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
-                if result.get("error"):
-                    console.print(f"[dim]{stamp}[/] [red]error[/] {name}: {result['error']}")
-                elif result["changed"]:
-                    console.print(f"[dim]{stamp}[/] [bold red]CHANGED[/] {name}")
-                    if result.get("diff"):
-                        console.print(result["diff"][:2000])
-                else:
-                    console.print(f"[dim]{stamp}[/] [green]no change[/] {name}")
-                if not no_alerts:
-                    _print_deliveries(alert_manager.dispatch([result]))
-                next_run[name] = time.time() + int(w.get("interval") or 3600)
+                if w.get("paused"):
+                    console.print(f"[dim]{stamp}[/] [yellow]paused[/] {name}")
+                    next_run[name] = time.time() + interval
+                    continue
+                checked_any = True
+                try:
+                    result = monitor.check_one(w)
+                    if result.get("error"):
+                        console.print(f"[dim]{stamp}[/] [red]error[/] {name}: {result['error']}")
+                    elif result["changed"]:
+                        console.print(f"[dim]{stamp}[/] [bold red]CHANGED[/] {name}")
+                        if result.get("diff"):
+                            console.print(result["diff"][:2000])
+                    else:
+                        console.print(f"[dim]{stamp}[/] [green]no change[/] {name}")
+                    if not no_alerts:
+                        _print_deliveries(alert_manager.dispatch([result]))
+                except Exception as exc:  # noqa: BLE001 — a failing check must not kill the daemon
+                    console.print(f"[dim]{stamp}[/] [red]error[/] {name}: {exc}")
+                next_run[name] = time.time() + interval
 
             if once:
                 if not checked_any:
                     console.print("[dim]No watches due right now.[/]")
                 break
+            if not next_run:
+                time.sleep(1)
+                continue
             sleep_for = min(next_run.values()) - time.time()
             time.sleep(min(max(sleep_for, 1), 60))
     except KeyboardInterrupt:
@@ -492,7 +546,13 @@ def export(fmt, output, include_html):
         text = buf.getvalue()
 
     if output:
-        Path(output).write_text(text, encoding="utf-8")
+        if any(w.get("headers") for w in watches):
+            click.echo("Warning: backup contains per-watch headers which may include credentials.", err=True)
+        try:
+            Path(output).write_text(text, encoding="utf-8")
+        except OSError as exc:
+            console.print(f"[red]Cannot write export to '{output}': {exc}[/]")
+            sys.exit(1)
         console.print(f"[green]Exported to {output}[/]")
     else:
         click.echo(text, nl=False)
@@ -517,20 +577,50 @@ def import_cmd(file, replace):
         console.print("[red]Invalid backup: missing 'watches' list.[/]")
         sys.exit(1)
 
-    incoming = [w for w in watches if isinstance(w, dict) and w.get("name") and w.get("url")]
+    valid, invalid = [], 0
+    for w in watches:
+        if not isinstance(w, dict):
+            invalid += 1
+            console.print("[yellow]Skipping entry: not an object.[/]")
+            continue
+        name = w.get("name")
+        problem = None
+        try:
+            _validate_name(str(name or ""))
+        except ValueError as exc:
+            problem = f"invalid name ({exc})"
+        if problem is None and not (isinstance(w.get("url"), str) and is_valid_url(w["url"])):
+            problem = f"invalid URL: {w.get('url')!r}"
+        if problem is None:
+            try:
+                interval = int(w.get("interval", 3600))
+                if interval <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                problem = f"invalid interval: {w.get('interval')!r}"
+        if problem is None and "tags" in w and not isinstance(w["tags"], list):
+            problem = "tags must be a list"
+        if problem is None and "headers" in w and not isinstance(w["headers"], dict):
+            problem = "headers must be a dict"
+        if problem:
+            invalid += 1
+            console.print(f"[yellow]Skipping watch '{name or '?'}': {problem}.[/]")
+            continue
+        valid.append(w)
+
     snapshots = data.get("snapshots") or {}
 
     if replace:
         for w in storage.load_watches():
             storage.remove_watch(w["name"])
-        storage.save_watches(incoming)
-        imported = [w["name"] for w in incoming]
+        storage.save_watches(valid)
+        imported = [w["name"] for w in valid]
         skipped = []
     else:
         current = storage.load_watches()
         existing_names = {w["name"] for w in current}
         imported, skipped = [], []
-        for w in incoming:
+        for w in valid:
             if w["name"] in existing_names:
                 skipped.append(w["name"])
                 continue
@@ -542,12 +632,17 @@ def import_cmd(file, replace):
     for wname in imported:
         snap = snapshots.get(wname)
         if isinstance(snap, dict) and snap.get("history"):
-            storage.restore_snapshot(wname, snap)
-            restored += 1
+            try:
+                storage.restore_snapshot(wname, snap)
+                restored += 1
+            except ValueError as exc:
+                console.print(f"[yellow]Skipping snapshot for '{wname}': {exc}[/]")
 
     message = f"[green]Imported {len(imported)} watch(es)[/]"
     if skipped:
         message += f", skipped {len(skipped)} existing"
+    if invalid:
+        message += f", skipped {invalid} invalid"
     console.print(message)
     if restored:
         console.print(f"[dim]Restored snapshot history for {restored} watch(es).[/]")
@@ -573,7 +668,7 @@ def alert_add(url, name, fmt, events):
         console.print(f"[red]Error: {exc}[/]")
         sys.exit(1)
     console.print(f"[green]Added alert channel:[/] {channel['name']}")
-    console.print(f"  URL:    {channel['url']}")
+    console.print(f"  URL:    {_mask_url(channel['url'])}")
     console.print(f"  Format: {channel['format']}")
     console.print(f"  Events: {channel['events']}")
 
@@ -591,7 +686,7 @@ def alert_list():
     table.add_column("Events")
     table.add_column("URL", style="dim")
     for c in channels:
-        table.add_row(c.get("name"), c.get("format", "generic"), c.get("events", "change"), c.get("url", "")[:60])
+        table.add_row(c.get("name"), c.get("format", "generic"), c.get("events", "change"), _mask_url(c.get("url", "")))
     console.print(table)
 
 
@@ -615,6 +710,9 @@ def alert_update(name, url, fmt, events):
     """Update an existing alert channel."""
     kwargs = {}
     if url is not None:
+        if not url.lower().startswith(("http://", "https://")):
+            console.print("[red]Error: Webhook URL must start with http:// or https://[/]")
+            sys.exit(1)
         kwargs["url"] = url
     if fmt is not None:
         kwargs["format"] = fmt
@@ -639,6 +737,10 @@ def alert_update(name, url, fmt, events):
 def alert_test(name):
     """Send a test alert to all configured channels (webhooks + email)."""
     manager = get_alert_manager()
+    no_channels = not manager.list_channels() and not manager.get_email_config().get("smtp_host")
+    if name is None and no_channels:
+        console.print("[yellow]No alert channels configured. Use 'pagewatch alert add <url>' or 'pagewatch alert email set' first.[/]")
+        return
     try:
         deliveries = manager.send_test(name)
     except ValueError as exc:
@@ -758,7 +860,10 @@ def config(ctx):
     if ctx.invoked_subcommand is not None:
         return
     storage = get_storage()
-    cfg = storage.load_config()
+    cfg = copy.deepcopy(storage.load_config())
+    email_cfg = cfg.get("alerts", {}).get("email")
+    if isinstance(email_cfg, dict) and "smtp_pass_obfuscated" in email_cfg:
+        email_cfg["smtp_pass_obfuscated"] = "***"
     console.print("[bold]PageWatch Configuration[/]")
     console.print(f"  Config file: {storage._config_file}")
     console.print(f"  Watch file:  {storage._watches_file}")
@@ -794,7 +899,14 @@ def config_set(key, value):
             sys.exit(1)
         cfg["retries"] = parsed
     elif key == "proxy":
-        cfg["proxy"] = None if value.strip().lower() in ("none", "null", "") else value.strip()
+        value = value.strip()
+        if value.lower() in ("none", "null", ""):
+            cfg["proxy"] = None
+        elif re.match(r"^(https?|socks5)://", value):
+            cfg["proxy"] = value
+        else:
+            console.print("[red]Error: proxy must start with http://, https://, or socks5:// (or 'none' to clear).[/]")
+            sys.exit(1)
     else:
         console.print(f"[red]Error: unknown key '{key}'. Valid keys: {', '.join(CONFIG_KEYS)}[/]")
         sys.exit(1)
@@ -807,7 +919,13 @@ def config_set(key, value):
 @click.option("--host", default="127.0.0.1", show_default=True, help="Address to bind")
 @click.option("--port", "-p", type=int, default=8787, show_default=True, help="Port to listen on")
 @click.option("--no-browser", is_flag=True, help="Do not open the dashboard in a browser")
-def serve(host, port, no_browser):
+@click.option(
+    "--token",
+    default=None,
+    envvar="PAGEWATCH_TOKEN",
+    help="Require this bearer token for API access (env: PAGEWATCH_TOKEN)",
+)
+def serve(host, port, no_browser, token):
     """Start the local web dashboard (REST API + UI)."""
     import threading
     import webbrowser
@@ -815,7 +933,7 @@ def serve(host, port, no_browser):
     from .server import PagewatchServer
 
     try:
-        server = PagewatchServer((host, port))
+        server = PagewatchServer((host, port), token=token)
     except OSError as exc:
         console.print(f"[red]Cannot bind {host}:{port} — {exc}[/]")
         sys.exit(1)
@@ -829,8 +947,11 @@ def serve(host, port, no_browser):
     if not ui_built:
         console.print("[yellow]Web UI assets not built — serving the JSON API with a placeholder page.[/]")
         console.print("[dim]Build them with: cd apps/web && npm install && npm run build[/]")
-    if host not in ("127.0.0.1", "localhost"):
+    if host not in ("127.0.0.1", "localhost") and not token:
         console.print("[yellow]Warning: no authentication — do not expose this server to untrusted networks.[/]")
+        console.print("[dim]Tip: use --token (or PAGEWATCH_TOKEN) to require API authentication.[/]")
+    elif token:
+        console.print("[dim]API authentication enabled (the dashboard will prompt for the token).[/]")
     console.print("[dim]Press Ctrl+C to stop.[/]")
 
     if not no_browser:
@@ -872,6 +993,7 @@ def clone(name, new_name):
         name=new_name, url=watch["url"], selector=watch.get("selector"),
         interval=watch.get("interval", 3600),
         ignore_patterns=list(watch.get("ignore_patterns") or []),
+        paused=watch.get("paused", False),
         tags=list(watch.get("tags") or []),
         headers=dict(watch.get("headers") or {}),
     )
@@ -890,11 +1012,12 @@ def import_csv(file, delimiter):
     try:
         with open(file, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f, delimiter=delimiter)
-            for row in reader:
+            for lineno, row in enumerate(reader, start=2):
                 name = (row.get("name") or "").strip()
                 url = (row.get("url") or "").strip()
                 if not name or not url:
                     skipped += 1
+                    console.print(f"[yellow]Skipping row {lineno}: missing name or url.[/]")
                     continue
                 if storage.get_watch(name):
                     skipped += 1
@@ -902,12 +1025,23 @@ def import_csv(file, delimiter):
                 url = normalize_url(url)
                 if not is_valid_url(url):
                     skipped += 1
+                    console.print(f"[yellow]Skipping row {lineno}: invalid URL '{url}'.[/]")
                     continue
-                interval = int(row.get("interval", 3600))
-                tags = [t.strip() for t in row.get("tags", "").split(";") if t.strip()]
-                storage.add_watch(name=name, url=url, interval=interval, tags=tags)
+                try:
+                    interval = int(row.get("interval") or 3600)
+                    if interval <= 0:
+                        raise ValueError("interval must be a positive number of seconds")
+                    selector = (row.get("selector") or "").strip() or None
+                    if selector:
+                        validate_selector(selector)
+                    tags = [t.strip() for t in (row.get("tags") or "").split(";") if t.strip()]
+                    storage.add_watch(name=name, url=url, selector=selector, interval=interval, tags=tags)
+                except (ValueError, TypeError) as exc:
+                    skipped += 1
+                    console.print(f"[yellow]Skipping row {lineno}: {exc}[/]")
+                    continue
                 imported += 1
-    except (OSError, ValueError, csv.Error) as exc:
+    except (OSError, csv.Error) as exc:
         console.print(f"[red]CSV import failed: {exc}[/]")
         sys.exit(1)
     console.print(f"[green]Imported {imported} watch(es) from CSV.[/]")
@@ -940,5 +1074,4 @@ def resume(name):
 
 
 if __name__ == "__main__":
-    print_banner()
     cli()

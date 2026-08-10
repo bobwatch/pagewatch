@@ -2,6 +2,8 @@ import functools
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from soupsieve import SelectorSyntaxError
+
 from .storage import Storage
 from .utils import apply_ignore_patterns, compute_diff, content_hash, extract_text, fetch_page
 
@@ -86,7 +88,7 @@ class Monitor:
                 last_status="ok",
             )
 
-        except (OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError, SelectorSyntaxError) as exc:
             result["error"] = str(exc)
             watch["error_count"] = (watch.get("error_count") or 0) + 1
             watch["check_count"] = (watch.get("check_count") or 0) + 1

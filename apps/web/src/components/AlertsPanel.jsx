@@ -105,7 +105,8 @@ export default function AlertsPanel({ toast, status, onDataChanged }) {
     setBusy((current) => ({ ...current, [key]: true }));
     try {
       const payload = {};
-      if (editUrl) payload.url = editUrl;
+      // The API serves masked webhook URLs; never submit a mask back.
+      if (editUrl && !editUrl.includes("***") && !editUrl.includes("…")) payload.url = editUrl;
       if (editFormat) payload.format = editFormat;
       if (editEvents) payload.events = editEvents;
       await api.updateAlert(editingChannel, payload);

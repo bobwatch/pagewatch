@@ -1,4 +1,5 @@
 import tempfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -130,3 +131,67 @@ def test_snapshot_history_and_previous_tracking():
         snap = store.load_snapshot("s")
         assert len(snap["history"]) == 3
         assert snap["previous"]["content_hash"] == "h1"
+
+
+def test_add_watch_rejects_reserved_and_control_characters():
+    with tmp_storage() as store:
+        for bad in ("a:b", "a|b", "a<b", 'a"b', "a?b", "a*b", "a\tb", "a\x01b"):
+            try:
+                store.add_watch(bad, "https://x.test")
+                raise AssertionError(f"expected ValueError for name {bad!r}")
+            except ValueError:
+                pass
+        assert store.load_watches() == []
+
+
+def test_restore_snapshot_rejects_path_traversal():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        store = Storage(root / "data")
+        for bad in ("../../evil", "..\\..\\evil"):
+            try:
+                store.restore_snapshot(bad, {"history": []})
+                raise AssertionError(f"expected ValueError for name {bad!r}")
+            except ValueError:
+                pass
+        # Nothing must have been written outside the data directory.
+        assert sorted(p.name for p in root.iterdir()) == ["data"]
+
+
+def test_save_snapshot_rejects_path_traversal():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        store = Storage(root / "data")
+        try:
+            store.save_snapshot("../../evil", "h1", "text", "<html></html>")
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+        assert sorted(p.name for p in root.iterdir()) == ["data"]
+
+
+def test_concurrent_update_watch_keeps_counts_and_file_intact():
+    with tmp_storage() as store:
+        store.add_watch("w", "https://x.test")
+        threads_count, increments = 4, 25
+
+        def bump():
+            for _ in range(increments):
+                # Read-modify-write must hold the instance lock across both
+                # calls, otherwise the increment itself races.
+                with store._lock:
+                    w = store.get_watch("w")
+                    store.update_watch("w", check_count=w["check_count"] + 1)
+
+        threads = [threading.Thread(target=bump) for _ in range(threads_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert store.get_watch("w")["check_count"] == threads_count * increments
+        # The file must still be valid JSON (no torn concurrent writes).
+        assert isinstance(store.load_watches(), list)
+        # No leftover tmp files from atomic writes.
+        leftovers = [p for p in store._root.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []

@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
+import soupsieve
 from bs4 import BeautifulSoup
 
 
@@ -20,7 +21,15 @@ def normalize_url(url: str) -> str:
 
 def is_valid_url(url: str) -> bool:
     parsed = urlparse(url)
-    return bool(parsed.scheme and parsed.netloc)
+    return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
+
+
+def validate_selector(selector: str) -> None:
+    """Validate a CSS selector, raising ValueError if the syntax is invalid."""
+    try:
+        BeautifulSoup("", "html.parser").select(selector)
+    except soupsieve.SelectorSyntaxError as exc:
+        raise ValueError(f"Invalid CSS selector: {selector!r}") from exc
 
 
 def _parse_charset(content_type: str) -> str | None:

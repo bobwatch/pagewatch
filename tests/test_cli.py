@@ -107,9 +107,9 @@ def test_alert_channel_management():
 def test_alert_test_without_channels_is_graceful():
     with tempfile.TemporaryDirectory() as home:
         result = invoke(["alert", "test"], home)
-        # Email is not configured, so the test "fails" for email
-        # but the command should still exit gracefully
-        assert "Alert failed" in result.output
+        # No webhooks and no email configured: friendly hint, clean exit.
+        assert result.exit_code == 0
+        assert "No alert channels configured" in result.output
 
 
 def test_check_detects_change_and_dispatches_alerts():
@@ -446,3 +446,163 @@ def test_alert_update_channel():
 
         result = invoke(["alert", "update", "nope", "--format", "discord"], home)
         assert result.exit_code == 1
+
+
+def test_add_rejects_non_positive_interval():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        result = invoke(["add", "https://x.test", "--name", "t1", "--interval", "-5"], home)
+        assert result.exit_code == 1
+        assert "positive" in result.output
+
+        result = invoke(["add", "https://x.test", "--name", "t1", "--interval", "0"], home)
+        assert result.exit_code == 1
+        assert storage.get_watch("t1") is None
+
+
+def test_add_rejects_invalid_selector():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        result = invoke(["add", "https://x.test", "--name", "t1", "--selector", "p["], home)
+        assert result.exit_code == 1
+        assert "selector" in result.output.lower()
+        assert storage.get_watch("t1") is None
+
+        result = invoke(["add", "https://x.test", "--name", "t1", "--selector", "#main"], home)
+        assert result.exit_code == 0
+        assert storage.get_watch("t1")["selector"] == "#main"
+
+
+def test_add_uses_config_interval_as_default():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        assert invoke(["config", "set", "interval", "900"], home).exit_code == 0
+
+        result = invoke(["add", "https://x.test", "--name", "t1"], home)
+        assert result.exit_code == 0
+        assert storage.get_watch("t1")["interval"] == 900
+
+        # An explicit --interval still wins over the config default.
+        result = invoke(["add", "https://y.test", "--name", "t2", "--interval", "60"], home)
+        assert result.exit_code == 0
+        assert storage.get_watch("t2")["interval"] == 60
+
+
+def test_add_generates_safe_name_for_port_url():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        result = invoke(["add", "http://example.com:8080/path"], home)
+        assert result.exit_code == 0
+        watch = storage.get_watch("example-com-8080")
+        assert watch is not None
+
+        # The generated name must be usable for snapshot writes (Windows-safe).
+        with patched(monitor=Monitor(storage=storage, fetcher=StaticFetcher(PAGE_V1))):
+            result = invoke(["check", "--name", "example-com-8080", "--no-alerts"], home)
+        assert result.exit_code == 0
+        assert storage.load_snapshot("example-com-8080") is not None
+
+
+def test_update_interval_and_pause_apply_together():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        invoke(["add", "https://x.test", "--name", "t1"], home)
+
+        result = invoke(["update", "t1", "--interval", "300", "--pause"], home)
+        assert result.exit_code == 0
+        watch = storage.get_watch("t1")
+        assert watch["interval"] == 300
+        assert watch["paused"] is True
+        assert "paused" in result.output
+
+
+def test_update_selector_and_clear_selector_conflict():
+    with tempfile.TemporaryDirectory() as home:
+        invoke(["add", "https://x.test", "--name", "t1"], home)
+        result = invoke(["update", "t1", "--selector", "#a", "--clear-selector"], home)
+        assert result.exit_code == 1
+        assert "cannot be used together" in result.output
+
+
+def test_alert_add_and_list_mask_webhook_url():
+    with tempfile.TemporaryDirectory() as home:
+        url = "https://hooks.slack.com/services/T00/B00/secret-token"
+        result = invoke(["alert", "add", url, "--name", "ops"], home)
+        assert result.exit_code == 0
+        assert "secret-token" not in result.output
+        assert "https://hooks.slack.com" in result.output
+
+        result = invoke(["alert", "list"], home)
+        assert result.exit_code == 0
+        assert "secret-token" not in result.output
+        assert "https://hooks.slack.com" in result.output
+
+
+def test_config_show_masks_smtp_password():
+    with tempfile.TemporaryDirectory() as home:
+        result = invoke([
+            "alert", "email", "set",
+            "--smtp-host", "smtp.test.com",
+            "--smtp-pass", "secret",
+            "--to-addrs", "alerts@test.com",
+        ], home)
+        assert result.exit_code == 0
+
+        result = invoke(["config"], home)
+        assert result.exit_code == 0
+        assert "c2VjcmV0" not in result.output  # base64 of "secret"
+        assert "secret" not in result.output
+        assert "***" in result.output
+
+
+def test_import_skips_invalid_entries():
+    with tempfile.TemporaryDirectory() as home:
+        backup = Path(home) / "backup.json"
+        backup.write_text(json.dumps({
+            "watches": [
+                {"name": "good", "url": "https://x.test", "interval": 60},
+                {"name": "bad-url", "url": "ftp://x.test", "interval": 60},
+                {"name": "bad-interval", "url": "https://y.test", "interval": -5},
+                {"name": "bad-interval-type", "url": "https://y.test", "interval": "abc"},
+                {"name": "bad: name", "url": "https://z.test", "interval": 60},
+                {"name": "bad-tags", "url": "https://t.test", "interval": 60, "tags": "oops"},
+                {"name": "bad-headers", "url": "https://h.test", "interval": 60, "headers": ["oops"]},
+            ],
+            "snapshots": {},
+        }), encoding="utf-8")
+
+        result = invoke(["import", str(backup)], home)
+        assert result.exit_code == 0
+        assert "Imported 1 watch(es)" in result.output
+        assert "skipped 6 invalid" in result.output
+
+        storage = Storage(Path(home))
+        assert storage.get_watch("good") is not None
+        assert storage.get_watch("bad-url") is None
+        assert storage.get_watch("bad-interval") is None
+        assert storage.get_watch("bad-tags") is None
+
+
+def test_import_csv_selector_column_and_bad_rows():
+    with tempfile.TemporaryDirectory() as home:
+        csv_file = Path(home) / "watches.csv"
+        csv_file.write_text(
+            "name,url,selector,interval,tags\n"
+            "t1,https://x.test,#main,60,news;tech\n"
+            "t2,https://y.test,,abc,\n"
+            "t3,https://z.test,,-5,\n"
+            "t4,https://w.test,,,\n",
+            encoding="utf-8",
+        )
+
+        result = invoke(["import-csv", str(csv_file)], home)
+        assert result.exit_code == 0
+        assert "Imported 2 watch(es)" in result.output
+        assert "Skipped 2" in result.output
+
+        storage = Storage(Path(home))
+        assert storage.get_watch("t1")["selector"] == "#main"
+        assert storage.get_watch("t1")["tags"] == ["news", "tech"]
+        assert storage.get_watch("t2") is None
+        assert storage.get_watch("t3") is None
+        assert storage.get_watch("t4")["interval"] == 3600  # empty cell falls back to default

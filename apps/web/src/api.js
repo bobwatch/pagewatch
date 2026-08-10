@@ -1,9 +1,22 @@
-async function request(method, path, body) {
+async function request(method, path, body, retried = false) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const token = localStorage.getItem("pagewatch_token");
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(path, {
     method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    headers: Object.keys(headers).length ? headers : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  if (res.status === 401 && !retried) {
+    const entered = window.prompt(
+      "This pagewatch server requires an access token (PAGEWATCH_TOKEN). Enter it to continue:"
+    );
+    if (entered !== null) {
+      localStorage.setItem("pagewatch_token", entered.trim());
+      return request(method, path, body, true);
+    }
+  }
   let data = {};
   try {
     data = await res.json();

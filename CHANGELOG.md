@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.5.1 — 2026-08-10
+
+### Security
+- **Dashboard CORS removed**: the local server no longer sends
+  `Access-Control-Allow-Origin: *`; cross-origin web pages can no longer
+  read or drive the API from a browser.
+- **DNS-rebinding protection**: when bound to localhost without a token,
+  requests with non-localhost `Host` headers are rejected (403).
+- **Optional API authentication**: `pagewatch serve --token` (or the
+  `PAGEWATCH_TOKEN` env var) requires `Authorization: Bearer <token>` on
+  `/api/*`; the dashboard prompts for the token. Serving on a non-localhost
+  address without a token now prints a loud warning.
+- **Credential redaction**: `/api/config` and the alert-channel endpoints
+  mask webhook URLs and the stored SMTP password; submitting a masked URL
+  on update keeps the stored one. `pagewatch config` and `pagewatch alert
+  list`/`alert add` no longer print secrets in full; `pagewatch export`
+  warns when backups contain per-watch `headers` (possible credentials).
+- **Import hardening**: `pagewatch import` and `/api/import` validate every
+  entry (name, http(s) URL, positive interval, selector syntax, field
+  types) before writing. The API import is all-or-nothing with per-entry
+  error details; the CLI skips invalid entries with warnings. Watch names
+  can no longer traverse out of the snapshots directory (previously a
+  crafted backup could write files anywhere).
+- **Generic 500 responses**: internal errors no longer leak exception
+  details (paths, URLs) to API clients; tracebacks go to stderr instead.
+
+### Fixed
+- A single watch with an invalid CSS selector no longer crashes
+  `pagewatch check` or kills the `pagewatch watch` daemon; it is recorded
+  as an error result. `add`/`update` reject invalid selectors up front.
+- `pagewatch add` rejects non-positive intervals (previously a negative
+  interval caused hot-loop polling in daemon mode); without `--interval`
+  it now honors `config set interval` instead of a hardcoded 3600.
+- `pagewatch update --pause/--resume` now applies even when combined with
+  other options; `--selector` + `--clear-selector` together is an error;
+  the baseline is only reset when ignore patterns actually change.
+- `pagewatch watch` picks up watches added while it runs, survives all
+  watches being removed (no more `min()` crash), shows paused watches as
+  paused, and keeps running when a single check raises unexpectedly.
+- `pagewatch list` shows an `error` status; `clone` preserves the paused
+  state; auto-generated names for URLs with ports are filesystem-safe
+  (no `:` — previously broke snapshot writes on Windows).
+- `alert test` with no channels exits 0 with a friendly message instead of
+  a misleading "Email not configured" failure; `alert update --url` is
+  validated; `config set proxy` validates the scheme.
+- CSV import now actually reads the `selector` column, and one malformed
+  row no longer aborts the whole import (bad rows are skipped with
+  warnings, counts are reported). `export -o` reports I/O errors cleanly
+  instead of a raw traceback.
+- JSON storage is now thread-safe (instance lock + unique atomic-write
+  temp files), fixing lost updates when the dashboard, its scheduler
+  thread, and API handlers write concurrently. The dashboard's scheduler
+  thread logs and survives unexpected errors instead of dying silently,
+  and batch checks no longer hold the write lock during network requests.
+- `DELETE /api/watches/{name}/history` also resets the watch's `last_hash`
+  and returns 404 when there is no history; `clone` API response shape now
+  matches the other endpoints (`{"watch": ...}`); invalid `smtp_port`
+  returns 400 instead of 500; index.html no longer gets a long cache
+  header on case-insensitive filesystems.
+
 ## 0.5.0 — 2026-07-27
 
 ### Added

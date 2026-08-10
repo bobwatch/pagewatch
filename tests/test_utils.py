@@ -12,6 +12,7 @@ from pagewatch.utils import (
     fetch_page,
     is_valid_url,
     normalize_url,
+    validate_selector,
 )
 
 HTML = (
@@ -38,6 +39,28 @@ def test_is_valid_url():
     assert is_valid_url("https://example.com")
     assert not is_valid_url("not-a-url")
     assert not is_valid_url("")
+
+
+def test_is_valid_url_requires_http_scheme():
+    assert is_valid_url("https://example.com")
+    assert is_valid_url("http://example.com/path?q=1")
+    assert not is_valid_url("ftp://x")
+    assert not is_valid_url("file:///etc/passwd")
+    assert not is_valid_url("//example.com")  # no scheme
+    assert not is_valid_url("example.com")  # no scheme
+
+
+def test_validate_selector_accepts_valid():
+    assert validate_selector(".foo") is None
+    assert validate_selector("div > p.item") is None
+
+
+def test_validate_selector_rejects_invalid():
+    try:
+        validate_selector("div[")
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "Invalid CSS selector" in str(exc)
 
 
 def test_content_hash_is_deterministic_sha256():

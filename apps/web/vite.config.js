@@ -5,6 +5,7 @@ import react from "@vitejs/plugin-react";
 // Stable asset names (no hashes) keep rebuilds reviewable in git.
 export default defineConfig({
   plugins: [react()],
+  base: "./",
   publicDir: "src/public",
   build: {
     outDir: "../../src/pagewatch/webui",

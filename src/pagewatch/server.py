@@ -24,14 +24,22 @@ Endpoints (all JSON):
     POST   /api/alerts/test            {name?}
 
 Anything else is served from the built web UI (SPA fallback to index.html).
-The server binds to 127.0.0.1 by default and has no authentication — do not
-expose it to untrusted networks.
+The server binds to 127.0.0.1 by default. An optional bearer token (the
+``token`` argument or the ``PAGEWATCH_TOKEN`` environment variable) protects
+all ``/api/*`` endpoints; without it, only loopback Host headers are accepted.
 """
 from __future__ import annotations
 
+import copy
+import hmac
+import ipaddress
 import json
+import os
 import re
+import sys
 import threading
+import time
+import traceback
 from datetime import datetime, timezone
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -42,8 +50,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import __version__
 from .alerts import SUPPORTED_EVENTS, SUPPORTED_FORMATS, AlertManager
 from .monitor import Monitor
-from .storage import Storage
-from .utils import is_valid_url, normalize_url
+from .storage import Storage, _validate_name
+from .utils import is_valid_url, normalize_url, validate_selector
 
 MAX_BODY_SIZE = 10 * 1024 * 1024  # 10 MB
 WEBUI_DIR = Path(__file__).parent / "webui"
@@ -116,10 +124,68 @@ ROUTES = [
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, payload: dict | None = None):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.payload = payload
+
+
+def _mask_url(url: str) -> str:
+    """Mask a webhook URL to ``scheme://host/…`` so secrets in the path stay server-side."""
+    parsed = urlparse(str(url or ""))
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}/…"
+    return "***"
+
+
+def _host_without_port(host_header: str) -> str:
+    host_header = host_header.strip()
+    if host_header.startswith("["):  # [::1]:8787
+        end = host_header.find("]")
+        return host_header[1:end] if end != -1 else host_header
+    if ":" in host_header:
+        return host_header.rsplit(":", 1)[0]
+    return host_header
+
+
+def _is_loopback_host(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
+def _validate_import_watch(entry: Any) -> list[str]:
+    """Validate one watch from an import payload; returns a list of problems (empty = ok)."""
+    if not isinstance(entry, dict):
+        return ["entry must be a JSON object"]
+    errors: list[str] = []
+    try:
+        _validate_name(str(entry.get("name") or ""))
+    except ValueError as exc:
+        errors.append(f"name: {exc}")
+    if not is_valid_url(str(entry.get("url") or "")):
+        errors.append(f"url: invalid URL {entry.get('url')!r} (http/https required)")
+    interval = entry.get("interval")
+    if interval is not None and (isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0):
+        errors.append("interval: must be a positive integer (seconds)")
+    tags = entry.get("tags")
+    if tags is not None and (not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)):
+        errors.append("tags: must be a list of strings")
+    headers = entry.get("headers")
+    if headers is not None and (
+        not isinstance(headers, dict)
+        or not all(isinstance(k, str) and isinstance(v, str) for k, v in headers.items())
+    ):
+        errors.append("headers: must be an object mapping strings to strings")
+    selector = entry.get("selector")
+    if selector:
+        try:
+            validate_selector(str(selector))
+        except ValueError as exc:
+            errors.append(f"selector: {exc}")
+    return errors
 
 
 class PagewatchServer(ThreadingHTTPServer):
@@ -129,15 +195,25 @@ class PagewatchServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address, storage=None, monitor_factory=None,
-                 alert_manager_factory=None, webui_dir=None):
+                 alert_manager_factory=None, webui_dir=None, token=None):
         self.storage = storage or Storage()
         self.monitor_factory = monitor_factory or partial(Monitor, storage=self.storage)
         self.alert_manager_factory = alert_manager_factory or partial(AlertManager, storage=self.storage)
         self.webui_dir = Path(webui_dir) if webui_dir else WEBUI_DIR
-        self.write_lock = threading.Lock()
+        # Reuse the storage RLock so multi-step read→modify→write handlers stay
+        # atomic against the storage layer's own per-method locking.
+        self.write_lock = self.storage._lock
+        self.token = token or os.environ.get("PAGEWATCH_TOKEN") or None
+        self.bind_is_loopback = _is_loopback_host(str(address[0]))
         self._daemon_thread: threading.Thread | None = None
         self._daemon_stop = threading.Event()
         super().__init__(address, RequestHandler)
+        if not self.bind_is_loopback and not self.token:
+            print(
+                "WARNING: pagewatch is binding to a non-loopback address with NO access token — "
+                "anyone who can reach this port has full control. Set PAGEWATCH_TOKEN or pass --token.",
+                file=sys.stderr,
+            )
 
     def start_daemon(self) -> None:
         if self._daemon_thread and self._daemon_thread.is_alive():
@@ -156,28 +232,37 @@ class PagewatchServer(ThreadingHTTPServer):
         return self._daemon_thread is not None and self._daemon_thread.is_alive()
 
     def _daemon_loop(self) -> None:
-        import time as _time
-        from datetime import datetime
         while not self._daemon_stop.is_set():
-            now = _time.time()
-            watches = self.storage.load_watches()
-            for w in watches:
-                if w.get("paused"):
-                    continue
-                last = w.get("last_checked")
-                interval = int(w.get("interval") or 3600)
-                if last:
-                    try:
-                        ts = datetime.fromisoformat(last).timestamp()
-                        if now < ts + interval:
-                            continue
-                    except ValueError:
-                        pass
-                monitor = self.monitor_factory()
-                result = monitor.check_one(w)
-                am = self.alert_manager_factory()
-                am.dispatch([result])
+            try:
+                self._daemon_tick()
+            except Exception:  # noqa: BLE001 - the daemon must survive any per-round failure
+                print("pagewatch daemon: check round failed:", file=sys.stderr)
+                traceback.print_exc()
             self._daemon_stop.wait(30)
+
+    def _daemon_tick(self) -> None:
+        """One check round: run every watch whose interval has elapsed."""
+        now = time.time()
+        watches = self.storage.load_watches()
+        for w in watches:
+            if w.get("paused"):
+                continue
+            last = w.get("last_checked")
+            try:
+                interval = int(w.get("interval") or 3600)
+            except (TypeError, ValueError):
+                interval = 3600
+            if last:
+                try:
+                    ts = datetime.fromisoformat(last).timestamp()
+                    if now < ts + interval:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            monitor = self.monitor_factory()
+            result = monitor.check_one(w)
+            am = self.alert_manager_factory()
+            am.dispatch([result])
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -195,9 +280,6 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         self.wfile.write(body)
 
@@ -216,10 +298,25 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise ApiError(400, "Request body must be a JSON object.")
         return data
 
+    def _check_access(self, path: str) -> None:
+        server = self.server
+        # DNS-rebinding guard: an unauthenticated server bound to loopback only
+        # answers requests addressed to localhost — browsers block cross-origin
+        # reads, but a hostile page could otherwise rebind a domain to 127.0.0.1.
+        if not server.token and server.bind_is_loopback:
+            hostname = _host_without_port(self.headers.get("Host") or "")
+            if hostname.lower() not in ("localhost", "127.0.0.1", "::1"):
+                raise ApiError(403, "Forbidden Host header.")
+        if server.token and path.startswith("/api/"):
+            auth = self.headers.get("Authorization") or ""
+            if not hmac.compare_digest(auth, f"Bearer {server.token}"):
+                raise ApiError(401, "Unauthorized: provide 'Authorization: Bearer <token>'.")
+
     def _dispatch(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         try:
+            self._check_access(path)
             if path.startswith("/api/"):
                 for route_method, pattern, name in ROUTES:
                     if route_method != method:
@@ -236,11 +333,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             raise ApiError(405, "Method not allowed")
         except ApiError as exc:
-            self._send_json(exc.status, {"error": exc.message})
+            self._send_json(exc.status, exc.payload or {"error": exc.message})
         except (BrokenPipeError, ConnectionResetError):
             pass
-        except (OSError, ValueError, RuntimeError) as exc:
-            self._send_json(500, {"error": f"Internal error: {exc}"})
+        except Exception:  # noqa: BLE001 - last-resort 500; details go to stderr, never to the client
+            print(f"pagewatch server: unhandled error for {method} {path}:", file=sys.stderr)
+            traceback.print_exc()
+            self._send_json(500, {"error": "Internal server error"})
 
     def do_GET(self):
         self._dispatch("GET")
@@ -258,12 +357,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Max-Age", "86400")
-        self.end_headers()
+        # The dashboard is same-origin with the API, so no CORS: no ACAO
+        # headers anywhere, and preflight requests get a plain 405.
+        self._send_json(405, {"error": "Method not allowed"})
 
     # -- static UI -----------------------------------------------------------
 
@@ -294,7 +390,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        if target != index:
+        if target != index.resolve():
             self.send_header("Cache-Control", "public, max-age=3600")
         self.end_headers()
         self.wfile.write(body)
@@ -461,7 +557,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 tags=list(watch.get("tags") or []),
                 headers=dict(watch.get("headers") or {}),
             )
-        self._send_json(201, cloned)
+        self._send_json(201, {"watch": cloned})
 
     def _run_checks(self, watches: list[dict], with_alerts: bool) -> dict[str, Any]:
         monitor = self.server.monitor_factory()
@@ -514,7 +610,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         })
 
     def h_get_config(self, query=None):
-        self._send_json(200, self.server.storage.load_config())
+        config = copy.deepcopy(self.server.storage.load_config())
+        email = config.get("alerts", {}).get("email", {})
+        if email.get("smtp_pass_obfuscated"):
+            email["smtp_pass_obfuscated"] = "***"
+        if email.get("smtp_pass"):
+            email["smtp_pass"] = "***"
+        for channel in config.get("alerts", {}).get("webhooks", []):
+            if channel.get("url"):
+                channel["url"] = _mask_url(channel["url"])
+        self._send_json(200, config)
 
     def h_put_config(self, query=None):
         body = self._read_json()
@@ -545,7 +650,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, config)
 
     def h_list_alerts(self, query=None):
-        self._send_json(200, self.server.alert_manager_factory().list_channels())
+        channels = self.server.alert_manager_factory().list_channels()
+        masked = [
+            {**c, "url": _mask_url(c["url"])} if c.get("url") else dict(c)
+            for c in channels
+        ]
+        self._send_json(200, masked)
 
     def h_add_alert(self, query=None):
         body = self._read_json()
@@ -579,11 +689,18 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def h_update_alert(self, name, query=None):
         body = self._read_json()
+        if not body:
+            raise ApiError(400, "No fields to update (url, format, events)")
         manager = self.server.alert_manager_factory()
         with self.server.write_lock:
+            old = next((c for c in manager.list_channels() if c.get("name") == name), None)
             kwargs = {}
             if "url" in body:
-                kwargs["url"] = str(body["url"])
+                new_url = str(body["url"] or "")
+                # The API serves masked URLs; never write a mask (or an empty
+                # value) back over the stored URL — treat it as "keep as is".
+                if new_url and "***" not in new_url and new_url != _mask_url((old or {}).get("url", "")):
+                    kwargs["url"] = new_url
             if "format" in body:
                 fmt = str(body["format"])
                 if fmt not in SUPPORTED_FORMATS:
@@ -594,11 +711,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if ev not in SUPPORTED_EVENTS:
                     raise ApiError(400, f"Unsupported events '{ev}'")
                 kwargs["events"] = ev
-            if not kwargs:
-                raise ApiError(400, "No fields to update (url, format, events)")
-            channel = manager.update_channel(name, **kwargs)
+            channel = manager.update_channel(name, **kwargs) if kwargs else old
             if not channel:
                 raise ApiError(404, f"Alert channel '{name}' not found.")
+        if channel.get("url"):
+            channel = {**channel, "url": _mask_url(channel["url"])}
         self._send_json(200, channel)
 
     def h_get_email_config(self, query=None):
@@ -610,11 +727,15 @@ class RequestHandler(BaseHTTPRequestHandler):
     def h_set_email_config(self, query=None):
         body = self._read_json()
         manager = self.server.alert_manager_factory()
+        try:
+            smtp_port = int(body.get("smtp_port", 587))
+        except (TypeError, ValueError):
+            raise ApiError(400, "smtp_port must be an integer.")
         with self.server.write_lock:
             try:
                 cfg = manager.set_email_config(
                     smtp_host=str(body.get("smtp_host", "")),
-                    smtp_port=int(body.get("smtp_port", 587)),
+                    smtp_port=smtp_port,
                     smtp_user=str(body.get("smtp_user") or ""),
                     smtp_pass=str(body.get("smtp_pass") or ""),
                     smtp_tls=bool(body.get("smtp_tls", True)),
@@ -654,7 +775,22 @@ class RequestHandler(BaseHTTPRequestHandler):
         watches = body.get("watches")
         if not isinstance(watches, list):
             raise ApiError(400, "Invalid backup: missing 'watches' list.")
-        incoming = [w for w in watches if isinstance(w, dict) and w.get("name") and w.get("url")]
+        # All-or-nothing: validate every entry before touching storage.
+        incoming, problems = [], []
+        for i, entry in enumerate(watches):
+            errors = _validate_import_watch(entry)
+            if errors:
+                problems.append({
+                    "index": i,
+                    "name": entry.get("name") if isinstance(entry, dict) else None,
+                    "errors": errors,
+                })
+            else:
+                incoming.append(entry)
+        if problems:
+            raise ApiError(400, "Import validation failed; nothing was imported.",
+                           {"error": "Import validation failed; nothing was imported.",
+                            "details": problems})
         snapshots = body.get("snapshots") or {}
         replace = bool(body.get("replace"))
         with self.server.write_lock:
@@ -698,8 +834,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         with self.server.write_lock:
             self._get_watch_or_404(name)
             snap_file = self.server.storage._snapshots_dir / f"{name}.json"
-            if snap_file.is_file():
-                snap_file.unlink()
+            if not snap_file.is_file():
+                raise ApiError(404, f"No history for watch '{name}'.")
+            snap_file.unlink()
+            self.server.storage.update_watch(name, last_hash=None)
         self._send_json(200, {"removed": name})
 
     def _batch_op(self, op: str, query=None):
@@ -708,13 +846,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not isinstance(names, list) or not names:
             raise ApiError(400, "Provide a 'names' list.")
         results = []
+        targets = []
         with self.server.write_lock:
             for n in names:
                 w = self.server.storage.get_watch(n)
                 if not w:
                     results.append({"name": n, "ok": False, "error": "not found"})
                     continue
-                if op == "pause":
+                if op == "check":
+                    targets.append(w)
+                elif op == "pause":
                     self.server.storage.update_watch(n, paused=True)
                     results.append({"name": n, "ok": True})
                 elif op == "resume":
@@ -723,10 +864,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 elif op == "delete":
                     self.server.storage.remove_watch(n)
                     results.append({"name": n, "ok": True})
-                elif op == "check":
-                    monitor = self.server.monitor_factory()
+        # Network checks run outside the write lock; check_one persists
+        # through storage methods that lock individually.
+        if targets:
+            monitor = self.server.monitor_factory()
+            for w in targets:
+                try:
                     r = monitor.check_one(w)
-                    results.append({"name": n, "ok": True, "result": r})
+                    results.append({"name": w["name"], "ok": True, "result": r})
+                except Exception as exc:  # noqa: BLE001 - one failing check must not fail the whole batch
+                    results.append({"name": w["name"], "ok": False, "error": str(exc)})
         self._send_json(200, {"results": results})
 
     def h_batch_pause(self, query=None):
@@ -747,6 +894,11 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, {"total": len(history), "history": history[-limit:]})
 
 
-def create_server(host: str = "127.0.0.1", port: int = 8787, **kwargs) -> PagewatchServer:
-    """Build a PagewatchServer (kwargs: storage, monitor_factory, alert_manager_factory, webui_dir)."""
-    return PagewatchServer((host, port), **kwargs)
+def create_server(host: str = "127.0.0.1", port: int = 8787, token: str | None = None,
+                  **kwargs) -> PagewatchServer:
+    """Build a PagewatchServer (kwargs: storage, monitor_factory, alert_manager_factory, webui_dir).
+
+    ``token`` enables bearer-token auth on ``/api/*``; when omitted, the
+    ``PAGEWATCH_TOKEN`` environment variable is used as a fallback.
+    """
+    return PagewatchServer((host, port), token=token, **kwargs)

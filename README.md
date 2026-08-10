@@ -76,14 +76,31 @@ pagewatch serve
 ```bash
 pagewatch serve                # opens http://127.0.0.1:8787
 pagewatch serve -p 9000 --no-browser
+pagewatch serve --token s3cret # require bearer-token auth for /api/*
 ```
 
 `pagewatch serve` starts a local dashboard (React) plus a JSON REST API
 (`/api/*`) on top of the exact same JSON-file storage the CLI uses — add and
 edit watches, run checks, read color-coded diffs, browse snapshot history,
 and manage alert channels and settings from the browser. No database, no
-external services, no authentication (localhost only by default — keep it
-that way unless you know what you're doing).
+external services.
+
+**Security notes:**
+
+- The server binds to localhost by default, answers only same-origin
+  requests (no CORS headers), and rejects non-localhost `Host` headers
+  (DNS-rebinding protection). Keep it on localhost unless you know what
+  you're doing.
+- Binding to a non-localhost address without `--token` prints a loud
+  warning — anyone who can reach the port can read and modify your data.
+  With `--token` (or the `PAGEWATCH_TOKEN` env var), every `/api/*` call
+  requires `Authorization: Bearer <token>`; the dashboard will prompt for it.
+- API responses redact stored secrets (SMTP password, webhook URLs). Backup
+  files created by `pagewatch export` still contain per-watch `headers`
+  verbatim — they may hold credentials, so store backups accordingly.
+- `pagewatch import` and `/api/import` validate every entry (name, URL
+  scheme, interval, selector) before writing anything; watch names are
+  always sanitized before being used as snapshot file names.
 
 The dashboard ships pre-built inside the package. Its source lives in
 [`apps/web`](apps/web/) (React + Vite); see the README there for the dev
@@ -184,9 +201,11 @@ pagewatch history pricing --limit 10
 pagewatch export > backup.json
 
 # Change history as CSV, straight into your spreadsheet or BI tool
+# (CSV is one-way: it contains history rows only and cannot be re-imported)
 pagewatch export --format csv -o history.csv
 
-# Restore on another machine (merge by default, --replace to overwrite)
+# Restore on another machine (merge by default, --replace to overwrite;
+# invalid entries are validated, skipped, and reported)
 pagewatch import backup.json
 ```
 
@@ -195,7 +214,7 @@ pagewatch import backup.json
 ```bash
 pagewatch config set proxy http://127.0.0.1:7890   # route checks through a proxy ('none' to clear)
 pagewatch config set retries 4                     # retry connection errors and 5xx with backoff
-pagewatch config set interval 1800                 # default interval for new setups
+pagewatch config set interval 1800                 # default interval for watches added without --interval
 ```
 
 ### View diff between snapshots

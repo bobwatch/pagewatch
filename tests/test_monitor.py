@@ -183,3 +183,15 @@ def test_error_increments_error_count():
         assert w["check_count"] == 2
         assert w["error_count"] == 1
         assert w["last_status"] == "error"
+
+
+def test_invalid_selector_is_captured_as_error():
+    with env(PAGE_V1) as (store, monitor):
+        store.add_watch("w", "https://x.test", selector="div[")
+        result = monitor.check_one(store.get_watch("w"))
+        assert result["error"] is not None
+        assert result["changed"] is False
+        w = store.get_watch("w")
+        assert w["last_status"] == "error"
+        assert w["error_count"] == 1
+        assert w["check_count"] == 1
