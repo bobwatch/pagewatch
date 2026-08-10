@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-08-11
 
 ### Added
 - **JS-rendered page monitoring**: `pagewatch add --render` (and
@@ -24,6 +24,20 @@
   watch that recovers after an alerted failure emits a one-shot `recovery`
   event (delivered to `events=all` channels and email). The dashboard
   settings page exposes the threshold.
+- **Snapshot storage controls**: `pagewatch config set store_html false`
+  stops storing raw HTML in snapshots (smaller snapshot files;
+  `export --include-html` then warns there is no HTML to export), and
+  `pagewatch config set max_history N` caps the per-watch history length
+  (default 1000). Both are also editable via `PUT /api/config` and the
+  dashboard settings page. A new `pagewatch stats` command shows monitoring
+  statistics plus disk usage (total, snapshots, largest watches); the
+  `/api/stats` response and the dashboard stats page include the same disk
+  usage breakdown.
+- **System service installation**: `pagewatch install-service` /
+  `pagewatch uninstall-service` set up (or remove) a per-user service that
+  runs `pagewatch watch` — a systemd user unit on Linux, a launchd agent on
+  macOS; unsupported platforms get a Task Scheduler hint. `python -m
+  pagewatch` now works as an entry point too.
 
 ## 0.5.1 — 2026-08-10
 

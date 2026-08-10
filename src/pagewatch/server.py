@@ -475,7 +475,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         })
 
     def h_stats(self, query=None):
-        self._send_json(200, self.server.storage.get_stats())
+        stats = self.server.storage.get_stats()
+        stats["disk_usage"] = self.server.storage.get_disk_usage()
+        self._send_json(200, stats)
 
     def h_list_watches(self, query=None):
         watches = self.server.storage.load_watches()
@@ -669,7 +671,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def h_put_config(self, query=None):
         body = self._read_json()
-        allowed = {"interval", "proxy", "retries", "error_threshold"}
+        allowed = {"interval", "proxy", "retries", "error_threshold", "store_html", "max_history"}
         unknown = set(body) - allowed
         if unknown:
             raise ApiError(400, f"Unknown config keys: {', '.join(sorted(unknown))}. "
@@ -683,6 +685,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold <= 0:
                     raise ApiError(400, "error_threshold must be a positive integer.")
                 config["error_threshold"] = threshold
+            if "store_html" in body:
+                store_html = body["store_html"]
+                if not isinstance(store_html, bool):
+                    raise ApiError(400, "store_html must be a boolean.")
+                config["store_html"] = store_html
+            if "max_history" in body:
+                max_history = body["max_history"]
+                if isinstance(max_history, bool) or not isinstance(max_history, int) or max_history <= 0:
+                    raise ApiError(400, "max_history must be a positive integer.")
+                config["max_history"] = max_history
             if "retries" in body:
                 try:
                     retries = int(body["retries"])
@@ -698,6 +710,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 proxy = (proxy or "").strip()
                 config["proxy"] = proxy if proxy and proxy.lower() not in ("none", "null") else None
             self.server.storage.save_config(config)
+            # Apply storage-related settings to the running instance immediately.
+            self.server.storage._store_html = bool(config.get("store_html", True))
+            if isinstance(config.get("max_history"), int) and config["max_history"] > 0:
+                self.server.storage._max_history = config["max_history"]
         self._send_json(200, config)
 
     def h_list_alerts(self, query=None):

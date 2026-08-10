@@ -1,4 +1,5 @@
 import json
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -661,3 +662,88 @@ def test_import_csv_selector_column_and_bad_rows():
         assert storage.get_watch("t2") is None
         assert storage.get_watch("t3") is None
         assert storage.get_watch("t4")["interval"] == 3600  # empty cell falls back to default
+
+
+def test_config_set_store_html_and_max_history():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+
+        for val in ("true", "yes", "on", "1"):
+            assert invoke(["config", "set", "store_html", val], home).exit_code == 0
+            assert storage.load_config()["store_html"] is True
+        for val in ("false", "no", "off", "0"):
+            assert invoke(["config", "set", "store_html", val], home).exit_code == 0
+            assert storage.load_config()["store_html"] is False
+        assert invoke(["config", "set", "store_html", "maybe"], home).exit_code == 1
+
+        assert invoke(["config", "set", "max_history", "50"], home).exit_code == 0
+        assert storage.load_config()["max_history"] == 50
+        for bad in ("0", "abc"):
+            assert invoke(["config", "set", "max_history", bad], home).exit_code == 1
+        # "-1" needs '--' so click does not treat it as an option.
+        assert invoke(["config", "set", "max_history", "--", "-1"], home).exit_code == 1
+
+
+def test_export_include_html_warns_when_html_storage_disabled():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        invoke(["add", "https://x.test", "--name", "t1"], home)
+        with patched(monitor=Monitor(storage=storage, fetcher=StaticFetcher(PAGE_V1))):
+            invoke(["check", "--no-alerts"], home)
+
+        result = invoke(["export", "--include-html"], home)
+        assert result.exit_code == 0
+        latest = json.loads(result.output)["snapshots"]["t1"]["latest"]
+        assert latest["html"] == PAGE_V1
+
+        # Disable HTML storage; the next check stores an empty html field.
+        assert invoke(["config", "set", "store_html", "false"], home).exit_code == 0
+        configured = Storage(Path(home))
+        with patched(monitor=Monitor(storage=configured, fetcher=StaticFetcher(PAGE_V2))):
+            invoke(["check", "--no-alerts"], home)
+        assert configured.load_snapshot("t1")["latest"]["html"] == ""
+
+        result = invoke(["export", "--include-html"], home)
+        assert result.exit_code == 0
+        assert "HTML storage is disabled" in result.stderr
+        latest = json.loads(result.stdout)["snapshots"]["t1"]["latest"]
+        assert latest["html"] == ""
+        # Text/diff data is unaffected by disabled HTML storage.
+        assert latest["full_text"]
+
+
+def test_stats_command_shows_disk_usage():
+    with tempfile.TemporaryDirectory() as home:
+        storage = Storage(Path(home))
+        invoke(["add", "https://x.test", "--name", "t1"], home)
+        with patched(monitor=Monitor(storage=storage, fetcher=StaticFetcher(PAGE_V1))):
+            invoke(["check", "--no-alerts"], home)
+        result = invoke(["stats"], home)
+        assert result.exit_code == 0
+        assert "PageWatch Statistics" in result.output
+        assert "Disk usage" in result.output
+        assert "t1" in result.output
+
+
+def test_install_service_unsupported_platform(monkeypatch):
+    with tempfile.TemporaryDirectory() as home:
+        monkeypatch.setattr(sys, "platform", "plan9")
+        result = invoke(["install-service"], home)
+        assert result.exit_code == 1
+        assert "not supported" in result.output
+
+
+def test_install_service_windows_shows_task_scheduler_hint(monkeypatch):
+    with tempfile.TemporaryDirectory() as home:
+        monkeypatch.setattr(sys, "platform", "win32")
+        result = invoke(["install-service"], home)
+        assert result.exit_code == 1
+        assert "schtasks" in result.output
+
+
+def test_uninstall_service_unsupported_platform(monkeypatch):
+    with tempfile.TemporaryDirectory() as home:
+        monkeypatch.setattr(sys, "platform", "plan9")
+        result = invoke(["uninstall-service"], home)
+        assert result.exit_code == 1
+        assert "not supported" in result.output

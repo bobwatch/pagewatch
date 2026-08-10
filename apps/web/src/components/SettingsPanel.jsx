@@ -8,6 +8,8 @@ export default function SettingsPanel({ toast, status }) {
   const [retries, setRetries] = useState("");
   const [errorThreshold, setErrorThreshold] = useState("");
   const [proxy, setProxy] = useState("");
+  const [storeHtml, setStoreHtml] = useState(true);
+  const [maxHistory, setMaxHistory] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -19,6 +21,8 @@ export default function SettingsPanel({ toast, status }) {
         setRetries(String(cfg.retries ?? 2));
         setErrorThreshold(String(cfg.error_threshold ?? 1));
         setProxy(cfg.proxy || "");
+        setStoreHtml(cfg.store_html ?? true);
+        setMaxHistory(String(cfg.max_history ?? 1000));
       })
       .catch((err) => toast(err.message, "err"));
   }, [toast]);
@@ -32,6 +36,8 @@ export default function SettingsPanel({ toast, status }) {
         retries: Number(retries),
         error_threshold: Number(errorThreshold),
         proxy: proxy.trim() || null,
+        store_html: storeHtml,
+        max_history: Number(maxHistory),
       });
       setConfig(updated);
       toast("Settings saved", "ok");
@@ -75,6 +81,22 @@ export default function SettingsPanel({ toast, status }) {
             <label htmlFor="cf-proxy">HTTP(S) proxy (empty = direct)</label>
             <input id="cf-proxy" placeholder="http://127.0.0.1:7890"
                    value={proxy} onChange={(e) => setProxy(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="cf-max-history">Snapshot history limit per watch</label>
+            <input id="cf-max-history" type="number" min="1" required
+                   value={maxHistory} onChange={(e) => setMaxHistory(e.target.value)} />
+            <p className="muted">Older history entries beyond this limit are pruned on each check.</p>
+          </div>
+          <div className="field">
+            <label htmlFor="cf-store-html">
+              <input id="cf-store-html" type="checkbox"
+                     checked={storeHtml} onChange={(e) => setStoreHtml(e.target.checked)} />
+              {" "}Store raw HTML in snapshots
+            </label>
+            <p className="muted">
+              Disabling this saves disk space but <code>export --include-html</code> will have no HTML to export.
+            </p>
           </div>
           <div>
             <button type="submit" className="btn btn-primary" disabled={saving}>

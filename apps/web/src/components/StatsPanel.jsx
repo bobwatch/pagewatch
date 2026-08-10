@@ -2,6 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { Spinner, Badge } from "./common";
 
+function formatBytes(n) {
+  if (n == null) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = n;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return unit === 0 ? `${size} B` : `${size.toFixed(1)} ${units[unit]}`;
+}
+
 export default function StatsPanel({ toast }) {
   const [stats, setStats] = useState(null);
 
@@ -35,6 +47,9 @@ export default function StatsPanel({ toast }) {
         <div className="stat-card"><h3>{stats.changes_today}</h3><p>Changes Today</p></div>
         <div className="stat-card"><h3>{stats.changes_week}</h3><p>Changes This Week</p></div>
         <div className="stat-card"><h3>{stats.changes_month}</h3><p>Changes This Month</p></div>
+        {stats.disk_usage && (
+          <div className="stat-card"><h3>{formatBytes(stats.disk_usage.total_bytes)}</h3><p>Disk Usage</p></div>
+        )}
       </div>
 
       {stats.top_changed?.length > 0 && (
@@ -45,6 +60,20 @@ export default function StatsPanel({ toast }) {
             <tbody>
               {stats.top_changed.map((w, i) => (
                 <tr key={w.name}><td>{i + 1}</td><td>{w.name}</td><td>{w.snapshots}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {stats.disk_usage?.per_watch?.length > 0 && (
+        <div className="card" style={{ marginTop: "1.5rem" }}>
+          <h3>Storage by Watch</h3>
+          <table>
+            <thead><tr><th>#</th><th>Name</th><th>Size</th></tr></thead>
+            <tbody>
+              {stats.disk_usage.per_watch.slice(0, 5).map((w, i) => (
+                <tr key={w.name}><td>{i + 1}</td><td>{w.name}</td><td>{formatBytes(w.bytes)}</td></tr>
               ))}
             </tbody>
           </table>

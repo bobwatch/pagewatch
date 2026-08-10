@@ -340,6 +340,22 @@ pagewatch check
 0 * * * * /usr/bin/pagewatch check >> /var/log/pagewatch.log 2>&1
 ```
 
+### Run as a system service
+
+```bash
+pagewatch install-service    # systemd --user on Linux, launchd on macOS
+pagewatch uninstall-service  # stop and remove it again
+```
+
+This installs a per-user service that runs `pagewatch watch` continuously and
+restarts it on failure (`~/.config/systemd/user/pagewatch.service` on Linux,
+`~/Library/LaunchAgents/tech.pagewatch.daemon.plist` on macOS). On Windows, use
+Task Scheduler instead:
+
+```cmd
+schtasks /Create /SC HOURLY /TN PageWatch /TR "pagewatch watch"
+```
+
 ### Docker
 
 ```bash

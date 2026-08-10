@@ -3,7 +3,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-from pagewatch.storage import Storage
+from pagewatch.storage import MAX_HISTORY, Storage
 
 
 @contextmanager
@@ -195,3 +195,84 @@ def test_concurrent_update_watch_keeps_counts_and_file_intact():
         # No leftover tmp files from atomic writes.
         leftovers = [p for p in store._root.iterdir() if p.name.endswith(".tmp")]
         assert leftovers == []
+
+
+def test_store_html_disabled_stores_empty_html_but_keeps_text():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage(Path(tmp), store_html=False)
+        store.save_snapshot("s", "h1", "text one", "<html>1</html>")
+        store.save_snapshot("s", "h2", "text two", "<html>2</html>")
+        snap = store.load_snapshot("s")
+        assert snap["latest"]["html"] == ""
+        assert snap["latest"]["full_text"] == "text two"
+        # Diff inputs (full_text / previous) are unaffected.
+        assert snap["previous"]["full_text"] == "text one"
+        assert snap["latest"]["content_hash"] == "h2"
+        assert len(snap["history"]) == 2
+
+
+def test_store_html_default_keeps_html():
+    with tmp_storage() as store:
+        store.save_snapshot("s", "h1", "text", "<html>1</html>")
+        assert store.load_snapshot("s")["latest"]["html"] == "<html>1</html>"
+
+
+def test_max_history_trims_history():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage(Path(tmp), max_history=3)
+        for i in range(5):
+            store.save_snapshot("s", f"h{i}", f"text {i}", "<html></html>")
+        history = store.load_snapshot("s")["history"]
+        assert len(history) == 3
+        assert [e["content_hash"] for e in history] == ["h2", "h3", "h4"]
+
+
+def test_storage_reads_store_html_and_max_history_from_config():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage(Path(tmp))
+        cfg = store.load_config()
+        cfg["store_html"] = False
+        cfg["max_history"] = 2
+        store.save_config(cfg)
+        # A fresh Storage() with no explicit args honors the config file.
+        configured = Storage(Path(tmp))
+        assert configured._store_html is False
+        assert configured._max_history == 2
+        configured.save_snapshot("s", "h1", "t1", "<html>1</html>")
+        assert configured.load_snapshot("s")["latest"]["html"] == ""
+
+
+def test_storage_invalid_max_history_in_config_falls_back():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage(Path(tmp))
+        cfg = store.load_config()
+        cfg["max_history"] = -5
+        store.save_config(cfg)
+        assert Storage(Path(tmp))._max_history == MAX_HISTORY
+
+
+def test_get_disk_usage():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Storage(Path(tmp))
+        store.save_config(store.load_config())
+        store.save_watches([])
+        store.save_snapshot("big", "h1", "x" * 500, "<html></html>")
+        store.save_snapshot("small", "h2", "y", "<html></html>")
+
+        usage = store.get_disk_usage()
+        big_size = (Path(tmp) / "snapshots" / "big.json").stat().st_size
+        small_size = (Path(tmp) / "snapshots" / "small.json").stat().st_size
+        other = (Path(tmp) / "config.json").stat().st_size + (Path(tmp) / "watches.json").stat().st_size
+
+        assert usage["snapshots_bytes"] == big_size + small_size
+        assert usage["total_bytes"] == big_size + small_size + other
+        assert [w["name"] for w in usage["per_watch"]] == ["big", "small"]
+        assert usage["per_watch"][0]["bytes"] == big_size
+
+
+def test_get_disk_usage_empty():
+    with tmp_storage() as store:
+        usage = store.get_disk_usage()
+        assert usage["snapshots_bytes"] == 0
+        assert usage["per_watch"] == []
+        assert usage["total_bytes"] == 0

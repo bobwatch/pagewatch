@@ -56,7 +56,8 @@ def _validate_name(name: str) -> str:
 
 
 class Storage:
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, store_html: bool | None = None,
+                 max_history: int | None = None):
         self._lock = threading.RLock()
         self._root = path or data_dir()
         self._root.mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,20 @@ class Storage:
         self._snapshots_dir = self._root / "snapshots"
         self._snapshots_dir.mkdir(exist_ok=True)
         self._alerts_history_file = self._root / "alerts_history.json"
+        # None means "take it from the config file" so every Storage()
+        # (CLI, monitor, server) honors config without plumbing at call sites.
+        config = self.load_config()
+        if store_html is None:
+            store_html = bool(config.get("store_html", True))
+        if max_history is None:
+            try:
+                max_history = int(config.get("max_history", MAX_HISTORY))
+            except (TypeError, ValueError):
+                max_history = MAX_HISTORY
+            if max_history <= 0:
+                max_history = MAX_HISTORY
+        self._store_html = store_html
+        self._max_history = max_history
 
     def load_config(self) -> dict[str, Any]:
         with self._lock:
@@ -179,8 +194,8 @@ class Storage:
             history = existing.setdefault("history", [])
             history.append(entry)
 
-            if len(history) > MAX_HISTORY:
-                history[:len(history) - MAX_HISTORY] = []
+            if len(history) > self._max_history:
+                history[:len(history) - self._max_history] = []
 
             prev_latest = existing.get("latest")
             if prev_latest and prev_latest.get("content_hash") != content_hash:
@@ -193,7 +208,7 @@ class Storage:
             existing["latest"] = {
                 "content_hash": content_hash,
                 "full_text": full_text,
-                "html": html,
+                "html": html if self._store_html else "",
                 "updated_at": entry["timestamp"],
             }
             _atomic_write(snap_file, json.dumps(existing, indent=2, ensure_ascii=False))
@@ -271,4 +286,31 @@ class Storage:
                 "changes_week": week_changes,
                 "changes_month": month_changes,
                 "top_changed": [{"name": n, "snapshots": c} for n, c in top_changed],
+            }
+
+    def get_disk_usage(self) -> dict[str, Any]:
+        with self._lock:
+            per_watch = []
+            snapshots_bytes = 0
+            for snap_file in self._snapshots_dir.glob("*.json"):
+                try:
+                    size = snap_file.stat().st_size
+                except OSError:
+                    continue
+                snapshots_bytes += size
+                per_watch.append({"name": snap_file.stem, "bytes": size})
+            per_watch.sort(key=lambda w: w["bytes"], reverse=True)
+
+            other_bytes = 0
+            for f in (self._config_file, self._watches_file, self._alerts_history_file):
+                try:
+                    if f.is_file():
+                        other_bytes += f.stat().st_size
+                except OSError:
+                    continue
+
+            return {
+                "total_bytes": snapshots_bytes + other_bytes,
+                "snapshots_bytes": snapshots_bytes,
+                "per_watch": per_watch,
             }

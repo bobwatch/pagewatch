@@ -17,12 +17,27 @@ from rich.table import Table
 from . import __version__
 from .alerts import SUPPORTED_EVENTS, SUPPORTED_FORMATS, AlertManager
 from .monitor import Monitor
+from .service import ServiceError
+from .service import install_service as svc_install
+from .service import uninstall_service as svc_uninstall
 from .storage import Storage, _validate_name
 from .utils import is_valid_url, normalize_url, validate_selector
 
 console = Console()
 
-CONFIG_KEYS = ("interval", "proxy", "retries", "error_threshold")
+CONFIG_KEYS = ("interval", "proxy", "retries", "error_threshold", "store_html", "max_history")
+
+_BOOL_TRUE = ("true", "yes", "on", "1")
+_BOOL_FALSE = ("false", "no", "off", "0")
+
+
+def _format_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{n} B"
 
 
 def get_storage() -> Storage:
@@ -553,6 +568,10 @@ def export(fmt, output, include_html):
     storage = get_storage()
     watches = storage.load_watches()
 
+    if include_html and not storage._store_html:
+        click.echo("Warning: HTML storage is disabled (store_html=false) — "
+                   "exported snapshots contain no HTML.", err=True)
+
     if fmt == "json":
         snapshots = {}
         for w in watches:
@@ -917,7 +936,8 @@ def config(ctx):
 @click.argument("key")
 @click.argument("value")
 def config_set(key, value):
-    """Set a config value. Keys: interval, proxy, retries, error_threshold ('none' clears proxy)."""
+    """Set a config value. Keys: interval, proxy, retries, error_threshold,
+    store_html, max_history ('none' clears proxy)."""
     storage = get_storage()
     cfg = storage.load_config()
 
@@ -958,6 +978,24 @@ def config_set(key, value):
         else:
             console.print("[red]Error: proxy must start with http://, https://, or socks5:// (or 'none' to clear).[/]")
             sys.exit(1)
+    elif key == "store_html":
+        lowered = value.strip().lower()
+        if lowered in _BOOL_TRUE:
+            cfg["store_html"] = True
+        elif lowered in _BOOL_FALSE:
+            cfg["store_html"] = False
+        else:
+            console.print("[red]Error: store_html must be true/false (yes/no/on/off also accepted).[/]")
+            sys.exit(1)
+    elif key == "max_history":
+        try:
+            parsed = int(value)
+        except ValueError:
+            parsed = 0
+        if parsed <= 0:
+            console.print("[red]Error: max_history must be a positive integer.[/]")
+            sys.exit(1)
+        cfg["max_history"] = parsed
     else:
         console.print(f"[red]Error: unknown key '{key}'. Valid keys: {', '.join(CONFIG_KEYS)}[/]")
         sys.exit(1)
@@ -1123,6 +1161,67 @@ def resume(name):
         sys.exit(1)
     storage.update_watch(name, paused=False)
     console.print(f"[green]Resumed watch:[/] {name}")
+
+
+@cli.command()
+def stats():
+    """Show monitoring statistics and disk usage."""
+    storage = get_storage()
+    s = storage.get_stats()
+    usage = storage.get_disk_usage()
+
+    console.print("[bold]PageWatch Statistics[/]")
+    console.print(f"  Watches:   {s['total_watches']} total, {s['active_watches']} active, "
+                  f"{s['paused_watches']} paused, {s['errored_watches']} errored")
+    console.print(f"  Checks:    {s['total_checks']} total, {s['total_errors']} errors "
+                  f"({s['error_rate']}% error rate)")
+    console.print(f"  Changes:   {s['changes_today']} today, {s['changes_week']} this week, "
+                  f"{s['changes_month']} this month")
+
+    if s["top_changed"]:
+        table = Table(title="Most Active Watches")
+        table.add_column("#", justify="right")
+        table.add_column("Name", style="cyan")
+        table.add_column("Snapshots", justify="right")
+        for i, w in enumerate(s["top_changed"], start=1):
+            table.add_row(str(i), w["name"], str(w["snapshots"]))
+        console.print(table)
+
+    console.print(f"  Disk usage: {_format_bytes(usage['total_bytes'])} total "
+                  f"({_format_bytes(usage['snapshots_bytes'])} in snapshots)")
+    top_usage = usage["per_watch"][:5]
+    if top_usage:
+        table = Table(title="Largest Snapshot Files")
+        table.add_column("#", justify="right")
+        table.add_column("Name", style="cyan")
+        table.add_column("Size", justify="right")
+        for i, w in enumerate(top_usage, start=1):
+            table.add_row(str(i), w["name"], _format_bytes(w["bytes"]))
+        console.print(table)
+
+
+@cli.command("install-service")
+def install_service_cmd():
+    """Install pagewatch as a user service (systemd on Linux, launchd on macOS)."""
+    try:
+        target = svc_install()
+    except ServiceError as exc:
+        console.print(f"[red]{exc}[/]")
+        sys.exit(1)
+    console.print(f"[green]Service installed and started:[/] {target}")
+    console.print("[dim]Check status with: systemctl --user status pagewatch (Linux) "
+                  "or launchctl list | grep pagewatch (macOS)[/]")
+
+
+@cli.command("uninstall-service")
+def uninstall_service_cmd():
+    """Stop and remove the pagewatch user service."""
+    try:
+        target = svc_uninstall()
+    except ServiceError as exc:
+        console.print(f"[red]{exc}[/]")
+        sys.exit(1)
+    console.print(f"[green]Service removed:[/] {target}")
 
 
 if __name__ == "__main__":

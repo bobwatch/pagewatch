@@ -636,3 +636,37 @@ def test_daemon_loop_survives_tick_errors():
         finally:
             server.stop_daemon()
             server.server_close()
+
+
+def test_config_store_html_and_max_history_validation():
+    with running_server() as (base, store, _session):
+        # store_html must be a strict boolean.
+        for bad in ("yes", 1, None):
+            r = requests.put(f"{base}/api/config", json={"store_html": bad}, timeout=5)
+            assert r.status_code == 400
+        r = requests.put(f"{base}/api/config", json={"store_html": False}, timeout=5)
+        assert r.status_code == 200
+        assert r.json()["store_html"] is False
+        # The running server's storage applies the new setting immediately.
+        assert store._store_html is False
+
+        # max_history must be a strict positive integer.
+        for bad in (0, -1, "abc", True):
+            r = requests.put(f"{base}/api/config", json={"max_history": bad}, timeout=5)
+            assert r.status_code == 400
+        r = requests.put(f"{base}/api/config", json={"max_history": 10}, timeout=5)
+        assert r.status_code == 200
+        assert r.json()["max_history"] == 10
+        assert store._max_history == 10
+
+
+def test_stats_endpoint_includes_disk_usage():
+    with running_server() as (base, store, _session):
+        store.save_snapshot("site", "h1", "some text", "<html></html>")
+        data = requests.get(f"{base}/api/stats", timeout=5).json()
+        assert "disk_usage" in data
+        usage = data["disk_usage"]
+        assert usage["snapshots_bytes"] > 0
+        assert usage["total_bytes"] >= usage["snapshots_bytes"]
+        assert usage["per_watch"][0]["name"] == "site"
+        assert usage["per_watch"][0]["bytes"] > 0
