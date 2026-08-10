@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { Badge, EmptyState, Spinner } from "./common";
 
-const FALLBACK_FORMATS = ["generic", "slack", "discord", "feishu", "dingtalk"];
+const FALLBACK_FORMATS = ["generic", "slack", "discord", "feishu", "dingtalk", "telegram", "wecom", "gotify", "ntfy"];
 const FALLBACK_EVENTS = ["change", "error", "all"];
 
 export default function AlertsPanel({ toast, status, onDataChanged }) {

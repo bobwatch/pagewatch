@@ -504,6 +504,23 @@ def test_alert_update_channel():
         assert result.exit_code == 1
 
 
+def test_alert_add_new_formats_roundtrip():
+    with tempfile.TemporaryDirectory() as home:
+        result = invoke(["alert", "add", "https://api.telegram.org/botT/sendMessage?chat_id=1",
+                         "--name", "tg", "--format", "telegram"], home)
+        assert result.exit_code == 0
+        assert "telegram" in result.output
+
+        result = invoke(["alert", "list"], home)
+        assert "telegram" in result.output
+
+        result = invoke(["alert", "add", "https://ntfy.sh/mytopic", "--name", "nt", "--format", "ntfy"], home)
+        assert result.exit_code == 0
+
+        result = invoke(["alert", "add", "https://hooks.example/x", "--format", "nope"], home)
+        assert result.exit_code != 0
+
+
 def test_add_rejects_non_positive_interval():
     with tempfile.TemporaryDirectory() as home:
         storage = Storage(Path(home))

@@ -717,7 +717,7 @@ def alert():
 @click.argument("url")
 @click.option("--name", "-n", default=None, help="Channel name (default: webhook-N)")
 @click.option("--format", "fmt", type=click.Choice(list(SUPPORTED_FORMATS)), default="generic",
-              show_default=True, help="Webhook payload format")
+              show_default=True, help="Webhook payload format (telegram URLs must carry ?chat_id=...)")
 @click.option("--events", type=click.Choice(list(SUPPORTED_EVENTS)), default="change",
               show_default=True, help="Which events trigger this channel")
 def alert_add(url, name, fmt, events):

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **New alert channels**: Telegram Bot API (`--format telegram`, with the
+  `chat_id` passed as a query parameter on the webhook URL), WeCom group
+  bots (`--format wecom`), Gotify (`--format gotify`), and ntfy
+  (`--format ntfy`, published as a plain-text body to the topic URL).
+  Available in the CLI, the REST API, and the dashboard format dropdown.
+
 ## 0.6.0 — 2026-08-11
 
 ### Added

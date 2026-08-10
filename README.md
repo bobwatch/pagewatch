@@ -36,7 +36,7 @@
 - **Content Hashing** — SHA256-based change detection, fast and reliable
 - **Unified Diffs** — Color-coded text diffs show exactly what changed
 - **Noise Filtering** — Per-watch regex ignore patterns kill false positives from timestamps, counters, and ads
-- **Webhook Alerts** — Push change/error notifications to Slack, Discord, Feishu, DingTalk, or any JSON endpoint
+- **Webhook Alerts** — Push change/error notifications to Slack, Discord, Feishu, DingTalk, Telegram, WeCom, Gotify, ntfy, or any JSON endpoint
 - **Daemon Mode** — `pagewatch watch` keeps checking continuously, honoring each page's interval
 - **Resilient Fetching** — Automatic retries with exponential backoff, optional HTTP(S) proxy
 - **JS-Rendered Pages** — Optional Playwright backend renders JavaScript-heavy pages in headless Chromium
@@ -191,6 +191,14 @@ pagewatch alert add https://open.feishu.cn/open-apis/bot/v2/hook/... --format fe
 pagewatch alert add https://oapi.dingtalk.com/robot/send?access_token=... --format dingtalk
 pagewatch alert add https://example.com/my-endpoint --format generic --events all
 
+# Telegram Bot API — put the chat_id in the URL query
+pagewatch alert add "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>" --format telegram
+
+# Also supported: wecom (WeCom group bot), gotify, ntfy (plain-text publish to a topic URL)
+pagewatch alert add "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<KEY>" --format wecom
+pagewatch alert add "https://gotify.example.com/message?token=<TOKEN>" --format gotify
+pagewatch alert add https://ntfy.sh/mytopic --format ntfy
+
 # Verify, inspect, remove
 pagewatch alert test
 pagewatch alert list
@@ -316,7 +324,7 @@ Alert channels live in `config.json` under `alerts.webhooks`, e.g.:
 | **CSS Selectors** | ✅ | ✅ | ❌ | ✅ |
 | **Visual Diff** | via [pagewatch.tech](https://pagewatch.tech/?ref=github-compare) | ✅ | ❌ | ✅ |
 | **CLI** | ✅ | ❌ | ❌ | ❌ |
-| **Webhook Alerts** | ✅ Slack/Discord/Feishu/DingTalk | ✅ | ✅ | ✅ |
+| **Webhook Alerts** | ✅ Slack/Discord/Feishu/DingTalk/Telegram/WeCom/Gotify/ntfy | ✅ | ✅ | ✅ |
 | **Change History** | ✅ | ✅ | ✅ | ✅ |
 | **Open Source** | ✅ | ❌ | ❌ | ❌ |
 | **Unlimited URLs** | ✅ | ❌ | ❌ | ❌ |

@@ -8,12 +8,13 @@ import time
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import requests
 
 from .storage import Storage
 
-SUPPORTED_FORMATS = ("generic", "slack", "discord", "feishu", "dingtalk")
+SUPPORTED_FORMATS = ("generic", "slack", "discord", "feishu", "dingtalk", "telegram", "wecom", "gotify", "ntfy")
 SUPPORTED_EVENTS = ("change", "error", "all")
 DEFAULT_TIMEOUT = 10
 DIFF_PREVIEW_CHARS = 800
@@ -61,7 +62,12 @@ def _filter_matches(pattern: str, diff: str) -> bool:
         return True
 
 
-def build_payload(fmt: str, event: dict[str, Any]) -> dict[str, Any]:
+def build_payload(fmt: str, event: dict[str, Any], url: str | None = None) -> dict[str, Any]:
+    """Build the request payload for a webhook format.
+
+    ``url`` is only needed for telegram, whose Bot API takes the target
+    ``chat_id`` as a query parameter on the webhook URL itself.
+    """
     text = render_text(event)
     if fmt == "slack":
         return {"text": text}
@@ -69,8 +75,18 @@ def build_payload(fmt: str, event: dict[str, Any]) -> dict[str, Any]:
         return {"content": text}
     if fmt == "feishu":
         return {"msg_type": "text", "content": {"text": text}}
-    if fmt == "dingtalk":
+    if fmt in ("dingtalk", "wecom"):
         return {"msgtype": "text", "text": {"content": text}}
+    if fmt == "gotify":
+        return {"title": "PageWatch", "message": text, "priority": 5}
+    if fmt == "telegram":
+        chat_id = parse_qs(urlparse(url or "").query).get("chat_id", [""])[0]
+        if not chat_id:
+            raise ValueError("Telegram webhook URL must include a 'chat_id' query parameter.")
+        return {"chat_id": chat_id, "text": text}
+    if fmt == "ntfy":
+        # ntfy's publish API takes a plain-text body; _post sends it as data=.
+        return {"text": text}
     payload: dict[str, Any] = {
         "source": "pagewatch",
         "sent_at": datetime.now(timezone.utc).isoformat(),
@@ -375,7 +391,7 @@ class AlertManager:
         return deliveries
 
     def _post(self, channel: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
-        payload = build_payload(channel.get("format", "generic"), event)
+        fmt = channel.get("format", "generic")
         report = {
             "channel": channel.get("name"),
             "url": channel.get("url"),
@@ -384,10 +400,18 @@ class AlertManager:
             "status": None,
             "error": None,
         }
+        try:
+            payload = build_payload(fmt, event, url=channel.get("url"))
+        except ValueError as exc:
+            report["error"] = str(exc)
+            return report
         last_error: str | None = None
         for attempt in range(WEBHOOK_RETRIES):
             try:
-                resp = self._session.post(channel["url"], json=payload, timeout=self._timeout)
+                if fmt == "ntfy":
+                    resp = self._session.post(channel["url"], data=payload["text"], timeout=self._timeout)
+                else:
+                    resp = self._session.post(channel["url"], json=payload, timeout=self._timeout)
                 report["status"] = getattr(resp, "status_code", None)
                 report["ok"] = report["status"] is not None and 200 <= report["status"] < 300
                 if report["ok"]:

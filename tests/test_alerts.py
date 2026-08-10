@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from pagewatch.alerts import AlertManager, build_payload
+from pagewatch.cli import _mask_url
 from pagewatch.storage import Storage
 
 
@@ -17,8 +18,8 @@ class FakeSession:
         self.exc = exc
         self.posts = []
 
-    def post(self, url, json=None, timeout=None):
-        self.posts.append({"url": url, "json": json, "timeout": timeout})
+    def post(self, url, json=None, data=None, timeout=None):
+        self.posts.append({"url": url, "json": json, "data": data, "timeout": timeout})
         if self.exc is not None:
             raise self.exc
         return FakeResponse(self.status_code)
@@ -272,3 +273,63 @@ def test_update_channel_partial():
         assert c["url"] == "https://hooks.example/a"
         assert c["format"] == "slack"
         assert c["events"] == "all"
+
+
+def test_new_channel_payload_formats():
+    event = {"event": "change", "name": "w", "url": "https://w.test", "diff_preview": "-a\n+b"}
+
+    telegram = build_payload("telegram", event, url="https://api.telegram.org/bot123:abc/sendMessage?chat_id=42")
+    assert telegram["chat_id"] == "42"
+    assert "change detected" in telegram["text"]
+
+    wecom = build_payload("wecom", event)
+    assert wecom["msgtype"] == "text"
+    assert "change detected" in wecom["text"]["content"]
+
+    gotify = build_payload("gotify", event)
+    assert gotify["title"] == "PageWatch"
+    assert gotify["priority"] == 5
+    assert "change detected" in gotify["message"]
+
+    ntfy = build_payload("ntfy", event)
+    assert "change detected" in ntfy["text"]
+
+
+def test_telegram_missing_chat_id_reports_error():
+    try:
+        build_payload("telegram", {"event": "test"}, url="https://api.telegram.org/bot123:abc/sendMessage")
+        raise AssertionError("expected ValueError for missing chat_id")
+    except ValueError as exc:
+        assert "chat_id" in str(exc)
+
+    with manager() as (am, session, _store):
+        am.add_channel("https://api.telegram.org/bot123:abc/sendMessage", name="tg", fmt="telegram")
+        reports = am.send_test("tg")
+        assert reports[0]["ok"] is False
+        assert "chat_id" in reports[0]["error"]
+        assert session.posts == []  # no request attempted
+
+
+def test_telegram_dispatch_sends_chat_id_and_masks_token():
+    url = "https://api.telegram.org/bot123:secret/sendMessage?chat_id=42"
+    with manager() as (am, session, _store):
+        am.add_channel(url, name="tg", fmt="telegram")
+        reports = am.dispatch([changed_result()])
+        assert reports[0]["ok"] is True
+        assert session.posts[0]["json"]["chat_id"] == "42"
+        assert "change detected" in session.posts[0]["json"]["text"]
+
+    masked = _mask_url(url)
+    assert "123" not in masked
+    assert "secret" not in masked
+    assert "42" not in masked
+
+
+def test_ntfy_posts_plain_text_body():
+    with manager() as (am, session, _store):
+        am.add_channel("https://ntfy.sh/mytopic", name="ntfy", fmt="ntfy")
+        reports = am.dispatch([changed_result()])
+        assert reports[0]["ok"] is True
+        post = session.posts[0]
+        assert post["json"] is None
+        assert "change detected" in post["data"]
