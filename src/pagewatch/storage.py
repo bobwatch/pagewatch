@@ -18,6 +18,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 MAX_HISTORY = 1000
 MAX_ALERT_HISTORY = 1000
+# A full-page rewrite can produce a megabyte-sized diff; cap what history keeps.
+MAX_DIFF_LENGTH = 4000
 
 
 def _atomic_write(path: Path, data: str) -> None:
@@ -181,7 +183,8 @@ class Storage:
             snap_file = self._snapshots_dir / f"{name}.json"
             _atomic_write(snap_file, json.dumps(data, indent=2, ensure_ascii=False))
 
-    def save_snapshot(self, name: str, content_hash: str, full_text: str, html: str) -> dict[str, Any]:
+    def save_snapshot(self, name: str, content_hash: str, full_text: str, html: str,
+                      diff: str | None = None) -> dict[str, Any]:
         name = _validate_name(name)
         with self._lock:
             snap_file = self._snapshots_dir / f"{name}.json"
@@ -191,6 +194,10 @@ class Storage:
                 "content_hash": content_hash,
                 "text_length": len(full_text),
             }
+            if diff is not None:
+                # RSS feeds read the diff straight out of history, so the key's
+                # presence marks "this check was a real change".
+                entry["diff"] = diff[:MAX_DIFF_LENGTH]
             history = existing.setdefault("history", [])
             history.append(entry)
 

@@ -2,6 +2,11 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Spinner } from "./common";
 
+function feedHref() {
+  const token = localStorage.getItem("pagewatch_token");
+  return token ? `/feed.xml?token=${encodeURIComponent(token)}` : "/feed.xml";
+}
+
 export default function SettingsPanel({ toast, status }) {
   const [config, setConfig] = useState(null);
   const [interval, setInterval] = useState("");
@@ -115,6 +120,12 @@ export default function SettingsPanel({ toast, status }) {
           <dd className="mono">{status?.data_dir || "—"}</dd>
           <dt>Storage</dt>
           <dd>Plain JSON files — no database. Back up with <code>pagewatch export</code>.</dd>
+          <dt>RSS feed</dt>
+          <dd>
+            <a href={feedHref()} target="_blank" rel="noreferrer">/feed.xml</a> — detected
+            changes (per watch: <code>/feed/&lt;name&gt;.xml</code>). The URL carries the
+            access token when auth is enabled; share it accordingly.
+          </dd>
         </dl>
       </div>
     </section>

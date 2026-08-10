@@ -23,10 +23,17 @@ Endpoints (all JSON):
     DELETE /api/alerts/{name}
     POST   /api/alerts/test            {name?}
 
-Anything else is served from the built web UI (SPA fallback to index.html).
+Anything else is served from the built web UI (SPA fallback to index.html),
+except two RSS 2.0 feeds of detected changes:
+
+    GET    /feed.xml                     all watches merged
+    GET    /feed/{name}.xml              a single watch
+
 The server binds to 127.0.0.1 by default. An optional bearer token (the
 ``token`` argument or the ``PAGEWATCH_TOKEN`` environment variable) protects
 all ``/api/*`` endpoints; without it, only loopback Host headers are accepted.
+Feed readers cannot answer a token prompt, so the feed endpoints also accept
+``?token=<token>`` as a query-parameter alternative to the Bearer header.
 """
 from __future__ import annotations
 
@@ -49,6 +56,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .alerts import SUPPORTED_EVENTS, SUPPORTED_FORMATS, AlertManager
+from .feed import build_rss
 from .monitor import Monitor
 from .storage import Storage, _validate_name
 from .utils import is_valid_url, normalize_url, validate_selector
@@ -310,7 +318,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             raise ApiError(400, "Request body must be a JSON object.")
         return data
 
-    def _check_access(self, path: str) -> None:
+    def _check_access(self, path: str, query: dict | None = None) -> None:
         server = self.server
         # DNS-rebinding guard: an unauthenticated server bound to loopback only
         # answers requests addressed to localhost — browsers block cross-origin
@@ -323,12 +331,22 @@ class RequestHandler(BaseHTTPRequestHandler):
             auth = self.headers.get("Authorization") or ""
             if not hmac.compare_digest(auth, f"Bearer {server.token}"):
                 raise ApiError(401, "Unauthorized: provide 'Authorization: Bearer <token>'.")
+        if server.token and (path == "/feed.xml" or path.startswith("/feed/")):
+            # Feed readers cannot answer a token prompt, so the token may ride
+            # in the query string instead of the Authorization header.
+            auth = self.headers.get("Authorization") or ""
+            if hmac.compare_digest(auth, f"Bearer {server.token}"):
+                return
+            supplied = ((query or {}).get("token") or [""])[0]
+            if not supplied or not hmac.compare_digest(supplied, server.token):
+                raise ApiError(401, "Unauthorized: provide 'Authorization: Bearer <token>' or '?token=<token>'.")
 
     def _dispatch(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        query = parse_qs(parsed.query)
         try:
-            self._check_access(path)
+            self._check_access(path, query)
             if path.startswith("/api/"):
                 for route_method, pattern, name in ROUTES:
                     if route_method != method:
@@ -336,10 +354,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                     match = pattern.match(path)
                     if match:
                         args = [unquote(g) for g in match.groups()]
-                        query = parse_qs(parsed.query)
                         getattr(self, name)(*args, query=query)
                         return
                 raise ApiError(404, f"No route for {method} {path}")
+            if method == "GET" and path == "/feed.xml":
+                self._serve_feed(None)
+                return
+            feed_match = re.match(r"^/feed/([^/]+)\.xml$", path)
+            if method == "GET" and feed_match:
+                self._serve_feed(unquote(feed_match.group(1)))
+                return
             if method == "GET":
                 self._serve_static(path)
                 return
@@ -404,6 +428,36 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         if target != index.resolve():
             self.send_header("Cache-Control", "public, max-age=3600")
+        self.end_headers()
+        self.wfile.write(body)
+
+    # -- RSS feeds ------------------------------------------------------------
+
+    def _serve_feed(self, name: str | None) -> None:
+        storage = self.server.storage
+        if name is not None:
+            watch = storage.get_watch(name)
+            if not watch:
+                raise ApiError(404, f"Watch '{name}' not found.")
+            watches = [watch]
+            title = f"pagewatch changes — {name}"
+        else:
+            watches = storage.load_watches()
+            title = "pagewatch changes"
+        watches_entries = []
+        for w in watches:
+            snapshot = storage.load_snapshot(w["name"]) or {}
+            watches_entries.append({
+                "name": w["name"],
+                "url": w.get("url"),
+                "history": snapshot.get("history", []),
+            })
+        host = self.headers.get("Host") or "localhost"
+        body = build_rss(watches_entries, title, f"http://{host}/",
+                         "Detected changes from pagewatch watches.").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/rss+xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 

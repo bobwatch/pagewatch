@@ -16,6 +16,7 @@ from rich.table import Table
 
 from . import __version__
 from .alerts import SUPPORTED_EVENTS, SUPPORTED_FORMATS, AlertManager
+from .feed import build_rss
 from .monitor import Monitor
 from .service import ServiceError
 from .service import install_service as svc_install
@@ -911,6 +912,34 @@ def diff(name):
             console.print(f"[red]{line}[/]")
         else:
             console.print(f"[dim]{line}[/]")
+
+
+@cli.command()
+@click.argument("name", required=False)
+@click.option("--limit", "-l", type=int, default=50, show_default=True, help="Max number of feed items")
+def feed(name, limit):
+    """Print an RSS 2.0 feed of detected changes (all watches, or just NAME)."""
+    storage = get_storage()
+    watches = storage.load_watches()
+    if name is not None:
+        watch = storage.get_watch(name)
+        if not watch:
+            console.print(f"[red]Watch '{name}' not found.[/]")
+            sys.exit(1)
+        watches = [watch]
+
+    watches_entries = []
+    for w in watches:
+        snapshot = storage.load_snapshot(w["name"]) or {}
+        watches_entries.append({
+            "name": w["name"],
+            "url": w.get("url"),
+            "history": snapshot.get("history", []),
+        })
+    title = f"pagewatch changes — {name}" if name else "pagewatch changes"
+    link = watches[0].get("url") if name and watches else ""
+    click.echo(build_rss(watches_entries, title, link,
+                         "Detected changes from pagewatch watches.", limit=limit), nl=False)
 
 
 @cli.group(invoke_without_command=True)

@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- **RSS feeds of detected changes**: `pagewatch feed [name]` prints an RSS 2.0
+  feed (all watches merged, or one) to stdout, and `pagewatch serve` exposes
+  `GET /feed.xml` and `GET /feed/{name}.xml` (`application/rss+xml`). Each
+  item carries the unified diff recorded at check time — snapshot history
+  entries now store a capped `diff` when a real change is detected; entries
+  written before this version have no diff and are simply skipped. When token
+  auth is enabled, the feed endpoints accept `?token=<token>` in addition to
+  the Bearer header, since feed readers cannot answer a token prompt.
 - **New alert channels**: Telegram Bot API (`--format telegram`, with the
   `chat_id` passed as a query parameter on the webhook URL), WeCom group
   bots (`--format wecom`), Gotify (`--format gotify`), and ntfy

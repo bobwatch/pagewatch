@@ -77,7 +77,7 @@ class Monitor:
                     result["diff"] = compute_diff(old_text, text)
                 result["changed"] = True
 
-            self._store.save_snapshot(name, new_hash, text, html)
+            self._store.save_snapshot(name, new_hash, text, html, diff=result["diff"])
 
             watch["last_hash"] = new_hash
             watch["last_checked"] = result["timestamp"]

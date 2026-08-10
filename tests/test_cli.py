@@ -3,6 +3,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
+from xml.dom import minidom
 
 from click.testing import CliRunner
 
@@ -764,3 +765,33 @@ def test_uninstall_service_unsupported_platform(monkeypatch):
         result = invoke(["uninstall-service"], home)
         assert result.exit_code == 1
         assert "not supported" in result.output
+
+
+def test_feed_command_outputs_valid_rss():
+    with tempfile.TemporaryDirectory() as home:
+        assert invoke(["add", "example.com", "--name", "t1"], home).exit_code == 0
+        store = Storage(Path(home))
+        store.save_snapshot("t1", "h1", "v1", "")
+        store.save_snapshot("t1", "h2", "v2", "", diff="-v1\n+v2")
+
+        result = invoke(["feed"], home)
+        assert result.exit_code == 0
+        minidom.parseString(result.output)
+        assert "Change detected on t1" in result.output
+
+        result = invoke(["feed", "t1"], home)
+        assert result.exit_code == 0
+        minidom.parseString(result.output)
+
+        result = invoke(["feed", "nope"], home)
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+
+def test_feed_command_empty_history_still_valid():
+    with tempfile.TemporaryDirectory() as home:
+        assert invoke(["add", "example.com", "--name", "t1"], home).exit_code == 0
+        result = invoke(["feed"], home)
+        assert result.exit_code == 0
+        doc = minidom.parseString(result.output)
+        assert doc.getElementsByTagName("item") == []

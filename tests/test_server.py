@@ -3,6 +3,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from xml.dom import minidom
 
 import requests
 
@@ -670,3 +671,38 @@ def test_stats_endpoint_includes_disk_usage():
         assert usage["total_bytes"] >= usage["snapshots_bytes"]
         assert usage["per_watch"][0]["name"] == "site"
         assert usage["per_watch"][0]["bytes"] > 0
+
+
+def test_feed_xml_endpoints():
+    with running_server() as (base, store, _session):
+        store.add_watch("t1", "https://x.test")
+        store.add_watch("t2", "https://y.test")
+        store.save_snapshot("t1", "h1", "v1", "")
+        store.save_snapshot("t1", "h2", "v2", "", diff="-v1\n+v2")
+        store.save_snapshot("t2", "h1", "w1", "")
+
+        r = requests.get(f"{base}/feed.xml", timeout=5)
+        assert r.status_code == 200
+        assert r.headers["Content-Type"] == "application/rss+xml; charset=utf-8"
+        minidom.parseString(r.text)
+        assert "Change detected on t1" in r.text
+        assert "+v2" in r.text
+        assert "Change detected on t2" not in r.text  # no change recorded for t2
+
+        r = requests.get(f"{base}/feed/t1.xml", timeout=5)
+        assert r.status_code == 200
+        assert "Change detected on t1" in r.text
+
+        assert requests.get(f"{base}/feed/nope.xml", timeout=5).status_code == 404
+
+
+def test_feed_token_auth_accepts_query_param():
+    with running_server(token="s3cret") as (base, _store, _session):
+        assert requests.get(f"{base}/feed.xml", timeout=5).status_code == 401
+        assert requests.get(f"{base}/feed.xml?token=wrong", timeout=5).status_code == 401
+        assert requests.get(f"{base}/feed.xml?token=s3cret", timeout=5).status_code == 200
+        r = requests.get(f"{base}/feed.xml",
+                         headers={"Authorization": "Bearer s3cret"}, timeout=5)
+        assert r.status_code == 200
+        # Bearer still required (query param is not silently ignored) for /api/*
+        assert requests.get(f"{base}/api/status?token=s3cret", timeout=5).status_code == 401

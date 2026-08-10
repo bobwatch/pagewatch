@@ -3,7 +3,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-from pagewatch.storage import MAX_HISTORY, Storage
+from pagewatch.storage import MAX_DIFF_LENGTH, MAX_HISTORY, Storage
 
 
 @contextmanager
@@ -131,6 +131,24 @@ def test_snapshot_history_and_previous_tracking():
         snap = store.load_snapshot("s")
         assert len(snap["history"]) == 3
         assert snap["previous"]["content_hash"] == "h1"
+
+
+def test_save_snapshot_stores_diff_only_when_given():
+    with tmp_storage() as store:
+        first = store.save_snapshot("s", "h1", "text one", "<html>1</html>")
+        assert "diff" not in first
+        second = store.save_snapshot("s", "h2", "text two", "<html>2</html>", diff="-one\n+two")
+        assert second["diff"] == "-one\n+two"
+        snap = store.load_snapshot("s")
+        assert "diff" not in snap["history"][0]
+        assert snap["history"][1]["diff"] == "-one\n+two"
+
+
+def test_save_snapshot_truncates_long_diffs():
+    with tmp_storage() as store:
+        entry = store.save_snapshot("s", "h1", "text", "", diff="x" * (MAX_DIFF_LENGTH + 500))
+        assert len(entry["diff"]) == MAX_DIFF_LENGTH
+        assert len(store.load_snapshot("s")["history"][0]["diff"]) == MAX_DIFF_LENGTH
 
 
 def test_add_watch_rejects_reserved_and_control_characters():

@@ -64,6 +64,16 @@ def test_change_detected_with_diff_and_hash_update():
         assert second["current_hash"] != first["current_hash"]
 
 
+def test_change_stores_diff_in_history_entry():
+    with env(PAGE_V1, PAGE_V2) as (store, monitor):
+        store.add_watch("w", "https://x.test")
+        monitor.check_one(store.get_watch("w"))
+        monitor.check_one(store.get_watch("w"))
+        history = store.load_snapshot("w")["history"]
+        assert "diff" not in history[0]
+        assert "+version two" in history[1]["diff"]
+
+
 def test_no_change_on_identical_content():
     with env(PAGE_V1, PAGE_V1) as (store, monitor):
         store.add_watch("w", "https://x.test")

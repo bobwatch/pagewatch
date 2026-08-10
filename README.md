@@ -44,6 +44,7 @@
 - **Backup & Restore** — Export watches and change history as JSON/CSV, re-import with one command
 - **JSON Storage** — All data stored locally, easy to inspect and export
 - **Change History** — Every check is saved, replay diffs and compare snapshots
+- **RSS Feeds** — Subscribe to detected changes in any feed reader, per watch or all merged
 - **Simple & Lightweight** — Zero database required, just JSON files on disk
 
 ## Quick Start
@@ -269,6 +270,27 @@ pagewatch config set interval 1800                 # default interval for watche
 ```bash
 pagewatch diff api-docs
 ```
+
+### Subscribe to changes (RSS feed)
+
+```bash
+# RSS 2.0 feed of detected changes on stdout — pipe it anywhere, host it statically
+pagewatch feed > changes.xml
+
+# A single watch
+pagewatch feed api-docs > api-docs.xml
+
+# Or live from the dashboard server (all watches / one watch)
+pagewatch serve
+#   http://127.0.0.1:8787/feed.xml
+#   http://127.0.0.1:8787/feed/api-docs.xml
+```
+
+Each feed item carries the unified diff of that change. When the server runs
+with `--token`, feed readers can authenticate with
+`http://…/feed.xml?token=<token>` instead of a Bearer header — that URL
+contains the credential, so only share it with people you trust with full API
+access.
 
 ### List all watches
 
