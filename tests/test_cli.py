@@ -1,4 +1,5 @@
 import json
+import shutil
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -754,6 +755,11 @@ def test_install_service_unsupported_platform(monkeypatch):
 def test_install_service_windows_shows_task_scheduler_hint(monkeypatch):
     with tempfile.TemporaryDirectory() as home:
         monkeypatch.setattr(sys, "platform", "win32")
+        # Python 3.12's shutil.which() calls _winapi.NeedCurrentDirectoryForExePath()
+        # on its Windows branch, and _winapi is None on Linux, so the fake
+        # platform would crash executable resolution. Stub it out — the hint
+        # text does not depend on the resolved path.
+        monkeypatch.setattr(shutil, "which", lambda cmd, **kwargs: None)
         result = invoke(["install-service"], home)
         assert result.exit_code == 1
         assert "schtasks" in result.output
