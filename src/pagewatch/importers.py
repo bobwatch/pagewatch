@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Parsers that turn competitor watch-list exports into pagewatch watch dicts.
 
 Both parsers are pure functions: they take the raw export text and return a

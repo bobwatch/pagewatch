@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Local web dashboard for pagewatch.
 
 A dependency-free HTTP server (stdlib only) that exposes the JSON-file
