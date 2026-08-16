@@ -59,9 +59,18 @@ def patched(monitor=None, alert_manager=None):
 
 
 def test_version_reports_current_version():
+    # The CLI must report the version declared in pyproject.toml — the single
+    # source of truth — so a forgotten version bump fails CI instead of
+    # shipping a stale runtime version to users.
+    import re
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject.read_text(encoding="utf-8"), re.MULTILINE)
+    assert match, "version not found in pyproject.toml"
+
     result = CliRunner().invoke(cli, ["--version"])
     assert result.exit_code == 0
-    assert "0.5.0" in result.output
+    assert match.group(1) in result.output
 
 
 def test_add_list_remove_watch():

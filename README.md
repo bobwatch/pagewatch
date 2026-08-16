@@ -50,7 +50,8 @@
 ## Quick Start
 
 ```bash
-pip install pagewatch
+# Until the package is published on PyPI, install from the repository:
+pip install "git+https://github.com/bobwatch/pagewatch.git"
 
 # Initialize config
 pagewatch init
@@ -129,7 +130,7 @@ plain HTTP fetch. Enable the optional Playwright backend to render the page in
 headless Chromium before extracting text:
 
 ```bash
-pip install "pagewatch[render]"
+pip install "pagewatch[render] @ git+https://github.com/bobwatch/pagewatch.git"
 playwright install chromium
 
 pagewatch add https://spa.example.com/dashboard --name spa-dash --render
@@ -362,7 +363,7 @@ Alert channels live in `config.json` under `alerts.webhooks`, e.g.:
 ### pip install
 
 ```bash
-pip install pagewatch
+pip install "git+https://github.com/bobwatch/pagewatch.git"
 pagewatch init
 pagewatch add https://example.com --name mysite --interval 3600
 pagewatch check
