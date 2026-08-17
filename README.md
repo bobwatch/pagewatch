@@ -261,6 +261,9 @@ pagewatch import backup.json
 # entries pagewatch cannot express, e.g. XPath filters, are skipped with a warning)
 pagewatch import changedetection-export.json --from changedetection
 pagewatch import distill-export.json --from distill
+
+# Import watches from a plain CSV (columns: name, url, selector, interval, tags)
+pagewatch import-csv watches.csv
 ```
 
 ### Proxy & retries
@@ -308,6 +311,9 @@ pagewatch list
 
 ```bash
 pagewatch config
+
+# Monitoring statistics and disk usage (check/change counts, largest watches)
+pagewatch stats
 ```
 
 ### Remove a watch
@@ -316,18 +322,35 @@ pagewatch config
 pagewatch remove api-docs
 ```
 
+### Clone, pause, resume
+
+```bash
+pagewatch clone api-docs --new-name api-docs-staging   # duplicate a watch and all its configuration
+pagewatch pause api-docs                               # skip it during checks (history is kept)
+pagewatch resume api-docs                              # start checking it again
+```
+
 ## Configuration
 
 All configuration is stored in `~/.pagewatch/` (override the location with the `PAGEWATCH_HOME` environment variable):
 
 ```
 ~/.pagewatch/
-  config.json     — global settings (interval, alert webhooks, proxy, retries)
+  config.json     — global settings (interval, alerts, proxy, retries, error/storage options)
   watches.json    — list of monitored pages (incl. per-watch ignore patterns)
   snapshots/      — per-page snapshot history (JSON)
 ```
 
-Change settings with `pagewatch config set <key> <value>` (keys: `interval`, `proxy`, `retries`).
+Change settings with `pagewatch config set <key> <value>`:
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `interval` | `3600` | default check interval (seconds) for watches added without `--interval` |
+| `retries` | `2` | retry connection errors and 5xx responses with backoff |
+| `error_threshold` | `1` | alert only after N consecutive failures; a recovery sends one notice |
+| `store_html` | `true` | keep raw HTML in snapshots (`false` shrinks snapshot files) |
+| `max_history` | `1000` | cap per-watch snapshot history length |
+| `proxy` | unset | route checks through an HTTP(S)/SOCKS5 proxy (`none` clears) |
 
 Alert channels live in `config.json` under `alerts.webhooks`, e.g.:
 
